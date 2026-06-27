@@ -1,0 +1,27 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# 个人持仓(隐私)
+positions.yaml
+logs/
+
+# Tushare token(隐私)
+.tushare_token
+
+# Anthropic API key(隐私)
+.anthropic_key
+
+# Server酱 推送密钥(隐私)
+.serverchan_key
+
+# 数据仓库(412MB DuckDB + 报告); 切勿入库, 否则 git add 会锁库并撑爆仓库
+data/
+.codegraph/

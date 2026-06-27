@@ -1,0 +1,72 @@
+# ashare-tool Phase 0 配置
+
+paths:
+  data_dir: data
+  warehouse: data/warehouse.duckdb
+  raw_dir: data/raw
+
+# 历史回填起始日 (Phase 0 默认 10 年)
+backfill_start: "20150101"
+
+# Phase 0 closed-loop 演示标的: 一只指数 + 一只ETF + 一只股票
+# 全量回填走 instruments 表
+sample_targets:
+  indices: ["000300"]      # 沪深300
+  etfs:    ["510300"]      # 华泰柏瑞沪深300ETF
+  stocks:  ["000001"]      # 平安银行
+
+# 持仓 watchlist (用关键词从 fund_etf_spot 列表里解析)
+# 注意: 4 只是场外联接基金, 不在 fund_etf_spot_em 中, Phase 0 暂跳过,
+#       Phase 1 接 fund_open_fund_info_em 拉 NAV.
+watchlist_etfs_on_exchange:
+  - {keyword: "中央企业红利",   note: "华泰柏瑞央企红利ETF"}
+  - {keyword: "沪深300ETF华夏", note: "华夏沪深300ETF"}
+  - {keyword: "中证500ETF",     note: "天弘中证500ETF"}
+  - {keyword: "中证1000ETF",    note: "易方达中证1000ETF"}
+
+watchlist_otc_funds:    # 场外联接 C 类, Phase 1 处理
+  - {code: "?", note: "天弘云计算产业ETF联接C"}
+  - {code: "?", note: "易方达黄金产业股票指数C"}
+  - {code: "?", note: "易方达科创50ETF联接C"}
+  - {code: "?", note: "易方达绿色电力ETF联接C"}
+  - {code: "?", note: "博时恒乐债券A"}
+
+# 舆情分析 (Phase 4): 每日财经新闻 → Claude 情绪解读, 写主页卡片
+# 密钥放 gitignored 的 .anthropic_key 文件 或 环境变量 ANTHROPIC_API_KEY
+sentiment:
+  enabled: true
+  model: deepseek-v4-pro             # aihubmix 上的 DeepSeek V4 Pro (推理模型)
+  base_url: https://aihubmix.com/v1  # OpenAI 兼容中转端点(aihubmix)
+  max_headlines: 80                  # 喂给 LLM 的标题上限(控 token 成本)
+
+# 盘中预警 (交易时段每5分钟查持仓+大盘实时价, 触发阈值推送; 免 token)
+# Server酱密钥放 gitignored 的 .serverchan_key 或环境变量 SERVERCHAN_KEY
+alerts:
+  enabled: true
+  channel: serverchan        # serverchan(微信)
+  drop_pct: 5.0              # 单只当日跌幅触发(%)
+  surge_pct: 7.0            # 单只当日涨幅触发(%)
+  stoploss_pct: 15.0        # 累计浮亏触及止损线(%)
+  index_drop_pct: 2.0       # 沪深300 当日跌幅触发(%)
+
+# 开盘竞价短线分析 (9:25 跑, 9:30前推送; 仅主板60/00; 复用 sentiment 的模型 + alerts 的推送通道)
+# ⚠ 短线投机性质, 非验证策略(本项目回测: 动量在A股负超额); 只给关注线索+风险, 不保证
+premarket:
+  enabled: true
+  pool: 25      # 量价初筛候选数(喂给 LLM)
+  picks: 5      # 最终点名上限
+
+# 尾盘半小时短线 (14:30 跑, 收盘前推送; 仅主板60/00; 复用 sentiment 的模型 + alerts 的推送通道)
+# 标准: 尾盘强势(涨幅3-8%适中·收当日高位·强于今开·放量)→ 博次日溢价(高开/反包)
+# ⚠ 短线投机性质, 非验证策略(本项目回测: 动量在A股负超额); 只给关注线索+风险, 不保证
+endday:
+  enabled: true
+  pool: 25      # 量价初筛候选数(喂给 LLM)
+  picks: 5      # 最终点名上限
+
+# 采集限流
+rate_limit:
+  per_call_sleep: 0.15    # 秒, 每次 akshare 调用后 sleep
+  batch_size: 50
+  batch_sleep: 2.0
+  max_retries: 3
