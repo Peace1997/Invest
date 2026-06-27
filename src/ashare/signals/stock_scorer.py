@@ -59,9 +59,13 @@ def _universe(con, min_obs: int) -> tuple[list[str], str]:
 
 
 def _bar_close(con, code: str) -> pd.DataFrame | None:
+    # close = 名义价(展示用); adj_close = 后复权价(喂 trend_features, 跨除权连续)
     df = con.execute(
-        "SELECT trade_date, close, pct_chg FROM daily_bar WHERE symbol=? "
-        "ORDER BY trade_date", [code.zfill(6)]).df()
+        "SELECT b.trade_date, b.close, b.pct_chg, "
+        "       b.close * COALESCE(f.adj_factor, 1) AS adj_close "
+        "FROM daily_bar b LEFT JOIN adj_factor f "
+        "  ON b.symbol = f.symbol AND b.trade_date = f.trade_date "
+        "WHERE b.symbol=? ORDER BY b.trade_date", [code.zfill(6)]).df()
     return df if df is not None and len(df) else None
 
 
@@ -90,7 +94,7 @@ def recommend_stocks(con, ak_src=None, top_n: int = 5, finalists: int = 20,
         df = _bar_close(con, code)
         if df is None or len(df) < min_obs:
             continue
-        f = trend_features(df["close"])
+        f = trend_features(df["adj_close"])   # 后复权喂趋势, df["close"] 仍为名义价(展示)
         score, _, _ = score_components(f)
         last_pct = float(df["pct_chg"].iloc[-1]) if pd.notna(df["pct_chg"].iloc[-1]) else None
         prelim.append((code, score, f, (float(df["close"].iloc[-1]),
@@ -173,7 +177,7 @@ def _recommend_value(con, ak_src, top_n, min_obs, years, exclude, max_per_indust
         if val.pe_ttm is not None and val.pe_ttm <= 0:   # 亏损硬闸门
             loss += 1
             continue
-        f = trend_features(df["close"])
+        f = trend_features(df["adj_close"])   # 后复权喂趋势, df["close"] 仍为名义价(展示)
         qual = quality_info(con, code)
         score, comps, conf = score_value_components(f, val=val, qual=qual)
         close = float(df["close"].iloc[-1]); as_of = df["trade_date"].iloc[-1]
@@ -232,7 +236,7 @@ def _recommend_reversal(con, top_n, finalists, min_obs, years, exclude
         df = _bar_close(con, code)
         if df is None or len(df) < min_obs:
             continue
-        f = trend_features(df["close"])
+        f = trend_features(df["adj_close"])   # 后复权喂趋势, df["close"] 仍为名义价(展示)
         if f is None or f.ret20 is None:
             continue
         if f.ret20 <= -35:                    # 排雷: 极端暴跌不接刀(暴雷/退市风险)
@@ -300,7 +304,7 @@ def _recommend_leader(con, ak_src, top_n, min_obs, years, exclude,
            (val and val.pe_ttm is not None and val.pe_ttm <= 0):
             loss += 1
             continue
-        f = trend_features(df["close"])
+        f = trend_features(df["adj_close"])   # 后复权喂趋势, df["close"] 仍为名义价(展示)
         score, comps, conf = score_value_components(f, val=val, qual=qual)
         ind = (qual.industry if qual and qual.industry else "未分类")
         cand.setdefault(ind, []).append(

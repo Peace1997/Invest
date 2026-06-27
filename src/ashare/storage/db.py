@@ -23,16 +23,24 @@ def upsert(
     df: pd.DataFrame,
     keys: Sequence[str],
 ) -> int:
-    """Idempotent upsert via DELETE ... USING + INSERT. Returns row count."""
+    """Idempotent upsert via DELETE ... USING + INSERT, wrapped in a single
+    transaction so a mid-way failure can't leave rows deleted-but-not-inserted.
+    Returns row count."""
     if df is None or df.empty:
         return 0
     cols = list(df.columns)
+    key_pred = " AND ".join(f"t.{k}=s.{k}" for k in keys)
+    col_list = ", ".join(cols)
     con.register("_stg", df)
     try:
-        key_pred = " AND ".join(f"t.{k}=s.{k}" for k in keys)
-        con.execute(f"DELETE FROM {table} t USING _stg s WHERE {key_pred}")
-        col_list = ", ".join(cols)
-        con.execute(f"INSERT INTO {table} ({col_list}) SELECT {col_list} FROM _stg")
+        con.execute("BEGIN TRANSACTION")
+        try:
+            con.execute(f"DELETE FROM {table} t USING _stg s WHERE {key_pred}")
+            con.execute(f"INSERT INTO {table} ({col_list}) SELECT {col_list} FROM _stg")
+            con.execute("COMMIT")
+        except Exception:
+            con.execute("ROLLBACK")   # 删了未插 → 整体回滚, 旧数据不丢
+            raise
     finally:
         con.unregister("_stg")
     return len(df)

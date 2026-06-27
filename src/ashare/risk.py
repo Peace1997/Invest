@@ -45,7 +45,7 @@ def _series_for(h: Holding, con) -> pd.Series | None:
     if h.type in ("stock", "etf"):
         try:
             df = con.execute(
-                "SELECT trade_date, close FROM daily_bar WHERE symbol=? ORDER BY trade_date",
+                "SELECT trade_date, close FROM daily_bar_adj WHERE symbol=? ORDER BY trade_date",
                 [h.code.zfill(6)]).df()
         except Exception:
             return None

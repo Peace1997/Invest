@@ -53,18 +53,62 @@ CREATE TABLE IF NOT EXISTS index_bar (
 );
 CREATE INDEX IF NOT EXISTS idx_index_bar_date ON index_bar(trade_date);
 
+-- 复权因子 (Tushare adj_factor). 后复权价 = 原始价 × adj_factor.
+-- 个股有; ETF/指数留空(视图按 1 处理). 与 daily_bar 同主键, daily_update 的 tushare 路径同步落库.
+CREATE TABLE IF NOT EXISTS adj_factor (
+    symbol     VARCHAR NOT NULL,
+    trade_date DATE    NOT NULL,
+    adj_factor DOUBLE,
+    PRIMARY KEY (symbol, trade_date)
+);
+CREATE INDEX IF NOT EXISTS idx_adj_factor_date ON adj_factor(trade_date);
+
+-- 后复权日线视图: 价格列 = 原始 × 复权因子(缺因子的标的/日期 COALESCE→1, 退化为原始价).
+-- 动量/均线/RSI/回测/回撤等"跨除权连续性"敏感的计算读此视图;
+-- 展示价、买卖位、当日涨跌幅、涨停判定、短线 gap 仍读 daily_bar(名义价).
+CREATE OR REPLACE VIEW daily_bar_adj AS
+SELECT b.symbol, b.trade_date, b.type,
+       b.open  * COALESCE(f.adj_factor, 1) AS open,
+       b.high  * COALESCE(f.adj_factor, 1) AS high,
+       b.low   * COALESCE(f.adj_factor, 1) AS low,
+       b.close * COALESCE(f.adj_factor, 1) AS close,
+       b.volume, b.amount, b.amplitude, b.pct_chg, b.change, b.turnover,
+       COALESCE(f.adj_factor, 1) AS adj_factor
+FROM daily_bar b
+LEFT JOIN adj_factor f ON b.symbol = f.symbol AND b.trade_date = f.trade_date;
+
 -- 估值时间序列 (Phase 1.3): 个股走百度估值, 指数走乐咕(滚动PE)/中证.
 -- symbol = 个股代码 或 指数代码(如 '000300'); 场外指数基金按其跟踪指数代码存.
+-- src 入主键: 同一(symbol,trade_date)允许多源共存, 杜绝 baidu/tushare 互相静默覆盖(丢数据).
+-- 读取走下方 valuation_daily_canon(每只票选单一口径), 避免分位窗口混源.
 CREATE TABLE IF NOT EXISTS valuation_daily (
     symbol     VARCHAR NOT NULL,
     trade_date DATE    NOT NULL,
     pe_ttm     DOUBLE,   -- 滚动市盈率
     pb         DOUBLE,   -- 市净率
     total_mv   DOUBLE,   -- 总市值(亿元), 个股有/指数留空
-    src        VARCHAR,  -- 'baidu' | 'legulegu'
-    PRIMARY KEY (symbol, trade_date)
+    src        VARCHAR NOT NULL DEFAULT 'unknown',  -- 'tushare' | 'baidu' | 'legulegu'
+    PRIMARY KEY (symbol, trade_date, src)
 );
 CREATE INDEX IF NOT EXISTS idx_valuation_date ON valuation_daily(trade_date);
+
+-- 估值 canonical 视图: 每只 symbol 选**单一来源**(行数最多, 同数按 tushare>baidu>legulegu),
+-- 保证 PE/PB 分位窗口口径一致, 且消除多源同日的随机覆盖. 估值分位/回测价值版读此视图.
+CREATE OR REPLACE VIEW valuation_daily_canon AS
+WITH src_count AS (
+    SELECT symbol, src, COUNT(*) AS n,
+           CASE src WHEN 'tushare' THEN 1 WHEN 'baidu' THEN 2
+                    WHEN 'legulegu' THEN 3 ELSE 9 END AS pri
+    FROM valuation_daily GROUP BY symbol, src
+),
+chosen AS (
+    SELECT symbol, src,
+           ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY n DESC, pri ASC) AS rn
+    FROM src_count
+)
+SELECT v.symbol, v.trade_date, v.pe_ttm, v.pb, v.total_mv, v.src
+FROM valuation_daily v
+JOIN chosen c ON v.symbol = c.symbol AND v.src = c.src AND c.rn = 1;
 
 -- 个股基本面/质量指标 (取最近年报). 稳健·价值版的质量因子从此表读, DB-first.
 -- 单位均为 %. ROE/增速越高越好; 负债率仅展示不计分(金融地产天然高).

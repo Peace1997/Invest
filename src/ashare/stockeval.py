@@ -43,9 +43,13 @@ def evaluate_stock(con, code: str, with_llm: bool = False, cfg: dict | None = No
     code = str(code).strip().zfill(6)
     if not (code.isdigit() and len(code) == 6):
         return {"ok": False, "error": f"代码须为6位数字: {code!r}"}
+    # 名义价(展示/买卖位/当日涨跌)读 daily_bar; 复权价(adj_close, 喂趋势/动量)由 adj_factor 现算
     bars = con.execute(
-        "SELECT trade_date, open, high, low, close, pct_chg FROM daily_bar "
-        "WHERE symbol=? AND type='stock' ORDER BY trade_date", [code]).df()
+        "SELECT b.trade_date, b.open, b.high, b.low, b.close, b.pct_chg, "
+        "       b.close * COALESCE(f.adj_factor, 1) AS adj_close "
+        "FROM daily_bar b LEFT JOIN adj_factor f "
+        "  ON b.symbol = f.symbol AND b.trade_date = f.trade_date "
+        "WHERE b.symbol=? AND b.type='stock' ORDER BY b.trade_date", [code]).df()
     if bars.empty:
         return {"ok": False, "error": f"库内无 {code} 的日线(可能非主板/未收录/ETF)"}
     name = _name(con, code)
@@ -60,7 +64,7 @@ def evaluate_stock(con, code: str, with_llm: bool = False, cfg: dict | None = No
     except Exception as e:  # noqa: BLE001
         log.warning("个股速评 实时行情失败 %s: %s", code, e)
 
-    f = trend_features(bars["close"])
+    f = trend_features(bars["adj_close"])   # 趋势/动量用后复权, 跨除权连续
     val = valuation_info(con, code)
     qual = quality_info(con, code)
     levels = compute_price_levels(bars[["trade_date", "open", "high", "low", "close"]])

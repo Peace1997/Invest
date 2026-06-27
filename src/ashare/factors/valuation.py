@@ -39,7 +39,7 @@ def valuation_info(con, symbol: str, years: int = 5) -> ValuationInfo | None:
     key = str(symbol).zfill(6) if str(symbol).isdigit() else str(symbol)
     try:
         df = con.execute(
-            "SELECT trade_date, pe_ttm, pb FROM valuation_daily WHERE symbol=? "
+            "SELECT trade_date, pe_ttm, pb FROM valuation_daily_canon WHERE symbol=? "
             "ORDER BY trade_date", [key]).df()
     except Exception:
         return None

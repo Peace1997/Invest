@@ -22,7 +22,7 @@ def _load_close(con, years_back: int) -> pd.DataFrame:
     max_d = con.execute("SELECT max(trade_date) FROM daily_bar").fetchone()[0]
     cutoff = max_d - pd.Timedelta(days=int(years_back * 365.25))
     df = con.execute(
-        "SELECT symbol, trade_date, close FROM daily_bar "
+        "SELECT symbol, trade_date, close FROM daily_bar_adj "
         "WHERE type='stock' AND (symbol LIKE '60%' OR symbol LIKE '00%') "
         "AND trade_date >= ? ORDER BY symbol, trade_date", [cutoff]).df()
     df["trade_date"] = pd.to_datetime(df["trade_date"])

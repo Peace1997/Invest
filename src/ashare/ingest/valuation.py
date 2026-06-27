@@ -44,7 +44,7 @@ def _store(con, symbol: str, df: pd.DataFrame, src: str) -> int:
     df["src"] = src
     if "total_mv" not in df.columns:
         df["total_mv"] = pd.NA
-    return upsert(con, "valuation_daily", df[_VAL_COLS], ["symbol", "trade_date"])
+    return upsert(con, "valuation_daily", df[_VAL_COLS], ["symbol", "trade_date", "src"])
 
 
 def ingest_stock_valuation(con, ak: AkSource, code: str) -> int:

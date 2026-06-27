@@ -28,7 +28,7 @@ def _series_for(h: Holding, con, ak_src) -> tuple[pd.Series | None, object]:
             return None, None
         try:
             df = con.execute(
-                "SELECT trade_date, close FROM daily_bar WHERE symbol=? ORDER BY trade_date",
+                "SELECT trade_date, close FROM daily_bar_adj WHERE symbol=? ORDER BY trade_date",
                 [h.code.zfill(6)],
             ).df()
         except Exception:

@@ -100,9 +100,9 @@ def cmd_daily(cfg, con, src, args=None):
     except Exception as e:
         print(f"⚠ 舆情生成失败(不影响行情入库): {e}")
 
-    if result.get("all_failed"):
+    if result.get("all_failed") or result.get("stale"):
         import sys
-        sys.exit(2)
+        sys.exit(2)   # 全失败 或 数据未追到最新交易日 → 非0退出, 供 cron/监控捕获
 
 
 def cmd_alerts(cfg, con, src, args=None):
@@ -304,27 +304,34 @@ def cmd_valuation(cfg, con, src):
 
 
 def cmd_recommend(cfg, con, src, args=None):
-    """推荐 ≥5 主板个股 + 板块 (规则打分, 可解释)."""
+    """推荐指数基金买卖观察 + ≥5 主板个股 + 板块 (规则打分, 可解释)."""
     from datetime import date
     from pathlib import Path
-    from .signals import recommend_stocks, recommend_sectors
+    from .signals import recommend_stocks, recommend_index_funds, recommend_sectors
     from .notify.recommend_report import render_recommendations
     from .portfolio import load_positions
     init_schema(con)
     top = getattr(args, "top", None) or 5
     held = set()
+    fund_held = set()
+    extra_funds = {}
     pf = load_positions()
     if pf:
         held = {h.code for h in pf.holdings if h.type in ("stock",)}
+        fund_held = {h.code for h in pf.holdings if h.type in ("etf", "otc_fund")}
+        extra_funds = {h.code: (h.name, h.type) for h in pf.holdings if h.type in ("otc_fund",)}
     style = getattr(args, "style", None) or "momentum"
     if style == "value":
         print("⏳ 个股打分(稳健·价值版: 读库估值 + 亏损剔除)...")
     else:
         print("⏳ 个股打分(趋势预筛 + 估值精排)...")
+    print("⏳ 指数基金打分(ETF日线/NAV + 趋势/估值)...")
+    funds, fdesc = recommend_index_funds(con, top_n=max(top, 6), held=fund_held, extra_funds=extra_funds)
     stocks, uni = recommend_stocks(con, ak_src=src, top_n=top, exclude=set(), style=style)
     print("⏳ 板块打分(行情源在线时)...")
     sectors, sdesc = recommend_sectors(src, top_n=top)
-    text = render_recommendations(stocks, uni, sectors, sdesc, held=held)
+    text = render_recommendations(stocks, uni, sectors, sdesc, funds=funds, fund_desc=fdesc,
+                                  held=held | fund_held)
     print(text)
     if args is not None and getattr(args, "save", False):
         out_dir = Path(resolve_path(cfg, "data_dir")) / "reports"

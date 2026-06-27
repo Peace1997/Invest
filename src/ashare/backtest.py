@@ -40,7 +40,7 @@ def _universe(con, universe: str, min_obs: int) -> tuple[list[str], str]:
 def _load_closes(con, codes: list[str]) -> dict:
     qs = ",".join(["?"] * len(codes))
     df = con.execute(
-        f"SELECT symbol, trade_date, close FROM daily_bar WHERE symbol IN ({qs}) "
+        f"SELECT symbol, trade_date, close FROM daily_bar_adj WHERE symbol IN ({qs}) "
         "ORDER BY symbol, trade_date", codes).df()
     df["trade_date"] = pd.to_datetime(df["trade_date"])
     return {code: (g["trade_date"].values, g["close"].to_numpy(dtype=float))
@@ -51,7 +51,7 @@ def _load_vals(con, codes: list[str]) -> dict:
     qs = ",".join(["?"] * len(codes))
     try:
         df = con.execute(
-            f"SELECT symbol, trade_date, pe_ttm, pb FROM valuation_daily WHERE symbol IN ({qs}) "
+            f"SELECT symbol, trade_date, pe_ttm, pb FROM valuation_daily_canon WHERE symbol IN ({qs}) "
             "ORDER BY symbol, trade_date", codes).df()
     except Exception:
         return {}

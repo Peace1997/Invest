@@ -50,7 +50,7 @@ def ingest_valuation_day(con, trade_date: str) -> int:
     df["trade_date"] = pd.to_datetime(trade_date, format="%Y%m%d").date()
     df["total_mv"] = df["total_mv"] / 1e4   # 万元 → 亿元
     df["src"] = "tushare"
-    return upsert(con, "valuation_daily", df[_COLS], ["symbol", "trade_date"])
+    return upsert(con, "valuation_daily", df[_COLS], ["symbol", "trade_date", "src"])
 
 
 def refresh_valuation_ts(con, trade_dates: list[str]) -> int:

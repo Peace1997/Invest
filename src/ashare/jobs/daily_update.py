@@ -1,6 +1,6 @@
 from __future__ import annotations
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, time as dtime, timedelta
 
 from ..sources import AkSource
 from ..ingest.calendar import ingest_calendar
@@ -77,7 +77,8 @@ def daily_update(con, src: AkSource, indices=(), lookback_days: int = 5,
     ts_stock_ok, ts_idx_covered, ts_etf_covered = False, set(), set()
     if trade_dates:
         from ..ingest.tushare_bars import (ingest_stock_bars_bulk,
-                                           ingest_index_bars_ts, ingest_etf_bars_ts)
+                                           ingest_index_bars_ts, ingest_etf_bars_ts,
+                                           ingest_adj_factor_bulk)
         try:
             n, latest = ingest_stock_bars_bulk(con, set(stocks), trade_dates)
             counts["stock"] += n
@@ -85,6 +86,13 @@ def daily_update(con, src: AkSource, indices=(), lookback_days: int = 5,
             log.info("tushare 个股兜底: %d 行, 覆盖至 %s, ok=%s", n, latest, ts_stock_ok)
         except Exception as e:
             log.warning("tushare 个股兜底失败, 回退 akshare: %s", e)
+        # 复权因子(后复权用): 与个股同窗同步, 失败非致命(视图按 1 退化为原始价)
+        try:
+            n_adj, _ = ingest_adj_factor_bulk(con, set(stocks), trade_dates)
+            counts["adj_factor"] = n_adj
+            log.info("tushare 复权因子: %d 行", n_adj)
+        except Exception as e:
+            log.warning("tushare 复权因子失败(非致命, 退化为原始价): %s", e)
         try:
             n_idx, ts_idx_covered = ingest_index_bars_ts(con, indices, start_s, end_s)
             counts["index"] += n_idx
@@ -169,5 +177,24 @@ def daily_update(con, src: AkSource, indices=(), lookback_days: int = 5,
         print("\n  ❌❌❌ 0 行新数据落库. 视为本次 daily 运行失败. ❌❌❌")
         print("     可能原因: 网络/代理无法连接东财, 或上游接口变更.")
         counts["all_failed"] = True
+
+    # 新鲜度断言: upsert 行数=输入行数(重刷旧窗口也非0), 不能证明数据真的追到最新交易日。
+    # 真正的成功标准 = 库内最新行情日 ≥ "应已收盘的最新交易日"(取自 calendar)。
+    if total_attempts > 0:
+        expected = con.execute(
+            "SELECT max(trade_date) FROM calendar WHERE trade_date<=?", [end]).fetchone()[0]
+        # 今日尚未收盘定稿(15:30前)→ 期望值回退到上一交易日(今日 bar 本就被守卫丢弃)
+        if expected == end and datetime.now().time() < dtime(15, 30):
+            expected = con.execute(
+                "SELECT max(trade_date) FROM calendar WHERE trade_date<?", [end]).fetchone()[0]
+        actual = con.execute("SELECT max(trade_date) FROM daily_bar").fetchone()[0]
+        if expected is not None and (actual is None or actual < expected):
+            print(f"\n  ⚠️ 数据未追到最新: 库内最新 {actual} < 应到 {expected} "
+                  "(最新交易日行情缺失, 非'重刷旧窗口'的假成功)")
+            counts["stale"] = True
+            counts["expected_latest"] = expected
+            counts["actual_latest"] = actual
+        else:
+            log.info("新鲜度 OK: 库内最新 %s ≥ 应到 %s", actual, expected)
 
     return counts

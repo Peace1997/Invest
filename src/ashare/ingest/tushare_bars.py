@@ -68,6 +68,28 @@ def ingest_stock_bars_bulk(con, symbols: set[str], trade_dates: list[str]) -> tu
     return total, latest
 
 
+def ingest_adj_factor_bulk(con, symbols: set[str], trade_dates: list[str]) -> tuple[int, str | None]:
+    """全市场逐日拉复权因子(adj_factor), 过滤到 `symbols`, 落 adj_factor。
+    返回 (行数, 已覆盖的最新交易日)。后复权价 = daily_bar.close × adj_factor。"""
+    pro = get_pro()
+    total, latest = 0, None
+    for d in trade_dates:
+        df = _call(pro.adj_factor, trade_date=d)
+        if df is None or df.empty:
+            continue
+        df = df.copy()
+        df["symbol"] = df["ts_code"].str[:6]
+        df["trade_date"] = pd.to_datetime(df["trade_date"], format="%Y%m%d").dt.date
+        df = df[df["symbol"].isin(symbols)]
+        if df.empty:
+            continue
+        total += upsert(con, "adj_factor",
+                        df[["symbol", "trade_date", "adj_factor"]],
+                        ["symbol", "trade_date"])
+        latest = d if latest is None or d > latest else latest
+    return total, latest
+
+
 def ingest_etf_bars_ts(con, etfs, start: str, end: str) -> tuple[int, set[str]]:
     """逐 ETF 拉窗口(fund_daily), 落 daily_bar(type='etf')。返回 (行数, 已覆盖代码集)。
     场内ETF代码→交易所后缀: 5x→.SH, 1x→.SZ。turnover fund_daily 无 → 留空。"""
