@@ -353,6 +353,17 @@ def cmd_backtest(cfg, con, src, args=None):
     print(res["text"])
 
 
+def cmd_backtest_short(cfg, con, src, args=None):
+    """短线策略回测: 日线粗验证(竞价/尾盘) + 尾盘分钟精确版(真实14:30, 仅已落库个股). 只读."""
+    from .backtest_shortterm import run_shortterm_backtest, run_endday_backtest_minute
+    years = getattr(args, "years", None) or 3
+    freq = getattr(args, "freq", None) or (cfg.get("minute", {}) or {}).get("freq", "5min")
+    print(f"⏳ 短线日线粗验证(近{years}年, 主板60/00)...")
+    print(run_shortterm_backtest(con, years_back=years)["text"])
+    print(f"\n⏳ 尾盘分钟精确版({freq}, 真实14:30入场, 覆盖=已 backfill-min 的个股)...")
+    print(run_endday_backtest_minute(con, years_back=years, freq=freq)["text"])
+
+
 def cmd_value_backfill(cfg, con, src, args=None):
     """回填稳健·价值版所需数据: 质量(全主板, 一次调用) + 估值(PE/PB, baidu 逐只).
     默认估值仅沪深300(~10-15min); --full 全主板估值(~数小时). 质量始终全主板. 幂等."""
@@ -476,6 +487,7 @@ CMDS = {
     "valuation": cmd_valuation,
     "value-backfill": cmd_value_backfill,
     "backtest": cmd_backtest,
+    "backtest-short": cmd_backtest_short,
     "recommend": cmd_recommend,
     "pf": cmd_pf,
     "risk": cmd_risk,
@@ -528,7 +540,7 @@ def main():
     db_path = resolve_path(cfg, "warehouse")
     # read-only commands can run alongside an open dashboard; write commands need
     # exclusive access — give a friendly hint instead of a lock stack trace.
-    read_only_cmds = {"ui", "query", "today", "live", "backtest", "risk", "rebalance", "alerts", "premarket", "endday", "stock"}
+    read_only_cmds = {"ui", "query", "today", "live", "backtest", "backtest-short", "risk", "rebalance", "alerts", "premarket", "endday", "stock"}
     ro = args.cmd in read_only_cmds
     try:
         con = open_db(db_path, read_only=ro)
