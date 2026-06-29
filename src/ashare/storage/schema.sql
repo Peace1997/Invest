@@ -79,6 +79,39 @@ LEFT JOIN adj_factor f ON b.symbol = f.symbol AND b.trade_date = f.trade_date;
 
 -- 估值时间序列 (Phase 1.3): 个股走百度估值, 指数走乐咕(滚动PE)/中证.
 -- symbol = 个股代码 或 指数代码(如 '000300'); 场外指数基金按其跟踪指数代码存.
+-- 分钟行情 (Tushare stk_mins, 仅个股; ETF/指数不支持). 默认 5min.
+-- 口径: volume=手(tushare vol 股 ÷100, 对齐 daily_bar); amount=元(stk_mins 原始即元, 不缩放).
+-- trade_time = bar 结束时间. freq 入主键, 同一标的可并存多频率.
+CREATE TABLE IF NOT EXISTS minute_bar (
+    symbol     VARCHAR   NOT NULL,
+    freq       VARCHAR   NOT NULL,   -- '1min'|'5min'|'15min'|'30min'|'60min'
+    trade_time TIMESTAMP NOT NULL,   -- bar 结束时间
+    type       VARCHAR   NOT NULL,   -- 'stock'(目前仅个股)
+    open       DOUBLE,
+    high       DOUBLE,
+    low        DOUBLE,
+    close      DOUBLE,
+    volume     DOUBLE,               -- 成交量, 手
+    amount     DOUBLE,               -- 成交额, 元
+    PRIMARY KEY (symbol, freq, trade_time)
+);
+CREATE INDEX IF NOT EXISTS idx_minute_bar_time ON minute_bar(trade_time);
+CREATE INDEX IF NOT EXISTS idx_minute_bar_sym  ON minute_bar(symbol, freq);
+
+-- 后复权分钟视图: 复权因子按 bar 所在交易日(trade_time::DATE) join; 缺因子 COALESCE→1.
+-- 跨除权的日内动量/形态计算读此视图; 当日盘口/涨停判定读 minute_bar(名义价).
+CREATE OR REPLACE VIEW minute_bar_adj AS
+SELECT m.symbol, m.freq, m.trade_time, m.type,
+       m.open  * COALESCE(f.adj_factor, 1) AS open,
+       m.high  * COALESCE(f.adj_factor, 1) AS high,
+       m.low   * COALESCE(f.adj_factor, 1) AS low,
+       m.close * COALESCE(f.adj_factor, 1) AS close,
+       m.volume, m.amount,
+       COALESCE(f.adj_factor, 1) AS adj_factor
+FROM minute_bar m
+LEFT JOIN adj_factor f
+  ON m.symbol = f.symbol AND CAST(m.trade_time AS DATE) = f.trade_date;
+
 -- src 入主键: 同一(symbol,trade_date)允许多源共存, 杜绝 baidu/tushare 互相静默覆盖(丢数据).
 -- 读取走下方 valuation_daily_canon(每只票选单一口径), 避免分位窗口混源.
 CREATE TABLE IF NOT EXISTS valuation_daily (

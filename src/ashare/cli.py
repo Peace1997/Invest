@@ -371,6 +371,62 @@ def cmd_value_backfill(cfg, con, src, args=None):
     backfill_value_universe(con, force=force, full=full)
 
 
+def _minute_symbols(cfg, con) -> list[str]:
+    """分钟落库标的 = config minute.watchlist + 持仓个股(positions.yaml). 仅个股。"""
+    mcfg = cfg.get("minute", {}) or {}
+    syms = {str(c).zfill(6) for c in (mcfg.get("watchlist") or [])}
+    try:
+        from .portfolio import load_positions
+        pf = load_positions()
+        if pf:
+            syms |= {h.code.zfill(6) for h in pf.holdings if h.type == "stock"}
+    except Exception:  # noqa: BLE001 - 无持仓文件不致命
+        pass
+    return sorted(syms)
+
+
+def cmd_backfill_min(cfg, con, src, args=None):
+    """回填分钟行情(Tushare stk_mins, 仅个股) → minute_bar. 默认 5min · 持仓+自选 · 近1年.
+    用法: ashare backfill-min [--freq 5min] [--symbols 600519,000001] [--start 20240101] [--end 20250601]"""
+    from datetime import date, timedelta
+    from .ingest.tushare_minute import ingest_minute_bars, DEFAULT_FREQ
+    init_schema(con)
+    mcfg = cfg.get("minute", {}) or {}
+    freq = getattr(args, "freq", None) or mcfg.get("freq", DEFAULT_FREQ)
+    raw = getattr(args, "symbols", None)
+    syms = [s.strip().zfill(6) for s in raw.split(",") if s.strip()] if raw else _minute_symbols(cfg, con)
+    if not syms:
+        print("无分钟标的: config.yaml minute.watchlist 为空且无持仓。用 --symbols 指定。")
+        return
+    end = getattr(args, "end", None) or date.today().strftime("%Y%m%d")
+    start = getattr(args, "start", None) or (
+        date.today() - timedelta(days=int(mcfg.get("history_days", 365)))).strftime("%Y%m%d")
+    print(f"⏳ 分钟回填 {freq} · {len(syms)}只个股 · {start}→{end} (按窗口分块, 仅个股)...")
+    res = ingest_minute_bars(con, syms, start, end, freq=freq)
+    print(f"✅ 完成: 成功{res['symbols']}只 · {res['rows']}行 · 失败{len(res['failed'])}只")
+    for c, m in res["failed"][:10]:
+        print(f"  ❌ {c}  {m}")
+
+
+def cmd_min_update(cfg, con, src, args=None):
+    """分钟增量更新(近 update_days 天, 默认5) → minute_bar(幂等). 收盘后/盘后跑。"""
+    from datetime import date, timedelta
+    from .ingest.tushare_minute import ingest_minute_bars, DEFAULT_FREQ
+    init_schema(con)
+    mcfg = cfg.get("minute", {}) or {}
+    freq = getattr(args, "freq", None) or mcfg.get("freq", DEFAULT_FREQ)
+    syms = _minute_symbols(cfg, con)
+    if not syms:
+        print("无分钟标的(config.yaml minute.watchlist 为空且无持仓)。")
+        return
+    days = int(mcfg.get("update_days", 5))
+    end = date.today().strftime("%Y%m%d")
+    start = (date.today() - timedelta(days=days)).strftime("%Y%m%d")
+    print(f"⏳ 分钟增量 {freq} · {len(syms)}只 · 近{days}天 ({start}→{end})...")
+    res = ingest_minute_bars(con, syms, start, end, freq=freq)
+    print(f"✅ 完成: 成功{res['symbols']}只 · {res['rows']}行 · 失败{len(res['failed'])}只")
+
+
 def cmd_ui(cfg, con, src):
     """Launch the Streamlit dashboard (browser-based 持仓看板)."""
     import subprocess, sys
@@ -411,6 +467,8 @@ CMDS = {
     "sample": cmd_sample,
     "backfill-meta": cmd_backfill_meta,
     "backfill-all": cmd_backfill_all,
+    "backfill-min": cmd_backfill_min,
+    "min-update": cmd_min_update,
     "daily": cmd_daily,
     "today": cmd_today,
     "live": cmd_live,
@@ -458,6 +516,12 @@ def main():
     p.add_argument("--full", action="store_true",
                    help="for `value-backfill`: backfill valuation for the FULL main board "
                         "(~hours) instead of just 沪深300 (quality is always full-board)")
+    p.add_argument("--freq", choices=["1min", "5min", "15min", "30min", "60min"],
+                   default=None, help="for `backfill-min`/`min-update`: 分钟频率 (默认读 config minute.freq)")
+    p.add_argument("--symbols", default=None,
+                   help="for `backfill-min`: 逗号分隔的6位个股代码; 不传则用持仓+config watchlist")
+    p.add_argument("--start", default=None, help="for `backfill-min`: 起始日 YYYYMMDD")
+    p.add_argument("--end", default=None, help="for `backfill-min`: 结束日 YYYYMMDD (默认今天)")
     args = p.parse_args()
 
     cfg = load(args.config)

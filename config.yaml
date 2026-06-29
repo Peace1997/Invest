@@ -64,6 +64,14 @@ endday:
   pool: 25      # 量价初筛候选数(喂给 LLM)
   picks: 5      # 最终点名上限
 
+# 分钟行情落库 (Tushare stk_mins, 仅个股; ETF/指数不支持).
+# 范围 = watchlist + 持仓个股(自动并入). 口径对齐 daily_bar(手/元). 后复权读 minute_bar_adj.
+minute:
+  freq: 5min            # 1min|5min|15min|30min|60min
+  history_days: 365     # backfill-min 首次回溯天数
+  update_days: 5        # min-update 增量回溯天数
+  watchlist: ["000001"] # 自选个股(6位); 持仓个股自动并入
+
 # 采集限流
 rate_limit:
   per_call_sleep: 0.15    # 秒, 每次 akshare 调用后 sleep
