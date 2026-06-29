@@ -154,27 +154,46 @@ def _minute_endday_features(con, freq: str, years_back: int):
     out = agg.join(bar, how="inner").reset_index()  # 无 14:30 整点 bar 的(如60min)自然丢弃
     rng = (out["hi"] - out["lo"]).replace(0, np.nan)
     out["pos_1430"] = (out["price_1430"] - out["lo"]) / rng
-    return out[["symbol", "d", "open_", "price_1430", "pos_1430", "cum_amt_1430"]]
+    # 今开不从分钟首bar(09:35)推断(语义依赖K线定义), 改由 run 函数 join daily_bar.open
+    return out[["symbol", "d", "price_1430", "pos_1430", "cum_amt_1430"]]
+
+
+_MIN_SYMS_FOR_LABEL = 20       # 覆盖个股数阈值: 不足则不下"有正超额"定性结论
+_MIN_SIGNALS_FOR_LABEL = 30    # 信号样本阈值: 同上
 
 
 def run_endday_backtest_minute(con, years_back: int = 3, freq: str = "5min") -> dict:
-    """尾盘策略·分钟精确版: 真实 14:30 入场 + 截至14:30的收盘位置/放量, 取代日线15:00近似。
+    """尾盘策略·分钟精确版: 真实 14:30 入场 + 截至14:30的收盘位置/同时段放量, 取代日线15:00近似。
     覆盖 = minute_bar 里有该 freq 的个股(诚实标注; 扩面需先 `ashare backfill-min` 更多标的)。"""
+    if freq not in ("1min", "5min", "15min", "30min"):
+        return {"ok": False, "text": f"{freq} 无 14:30 整点 bar, 尾盘回测请用 1/5/15/30min。"}
     feat = _minute_endday_features(con, freq, years_back)
     if feat is None or feat.empty:
         return {"ok": False, "text": f"无分钟数据({freq})。先 `ashare backfill-min` 落库再回测。"}
 
+    # 同时段放量分母 = 昨日(相邻交易日)截至14:30累计额。用 calendar 求前一交易日精确 merge,
+    # 避免分钟缺日时 shift 取到非相邻日; 缺前一交易日数据则置 NaN(该样本被滤掉)。
+    cal = con.execute("SELECT trade_date FROM calendar ORDER BY trade_date").df()
+    if not cal.empty:
+        cal["trade_date"] = pd.to_datetime(cal["trade_date"])
+        prev_map = dict(zip(cal["trade_date"], cal["trade_date"].shift(1)))
+        feat["prev_d"] = feat["d"].map(prev_map)
+    else:
+        feat["prev_d"] = pd.NaT
+    prev_amt = feat[["symbol", "d", "cum_amt_1430"]].rename(
+        columns={"d": "prev_d", "cum_amt_1430": "prev_cum_amt_1430"})
+    feat = feat.merge(prev_amt, on=["symbol", "prev_d"], how="left")
+
     syms = feat["symbol"].unique().tolist()
     qs = ",".join(["?"] * len(syms))
     daily = con.execute(
-        f"SELECT symbol, trade_date, close, amount FROM daily_bar "
+        f"SELECT symbol, trade_date, open, close FROM daily_bar "
         f"WHERE type='stock' AND symbol IN ({qs}) ORDER BY symbol, trade_date", syms).df()
     if daily.empty:
-        return {"ok": False, "text": "覆盖个股缺日线(需 daily_bar 提供昨日额/次日收)。"}
+        return {"ok": False, "text": "覆盖个股缺日线(需 daily_bar 提供今开/昨收/次日收)。"}
     daily["trade_date"] = pd.to_datetime(daily["trade_date"])
     g = daily.groupby("symbol", sort=False)
     daily["prev_close"] = g["close"].shift(1)
-    daily["prev_amount"] = g["amount"].shift(1)     # 昨日全天额(口径同分钟的元)
     daily["next_close"] = g["close"].shift(-1)
     daily["uni_t1"] = daily["next_close"] / daily["close"] - 1.0   # 覆盖内个股 T+1 基线
 
@@ -182,28 +201,39 @@ def run_endday_backtest_minute(con, years_back: int = 3, freq: str = "5min") -> 
     if m.empty:
         return {"ok": False, "text": "分钟与日线无法对齐(交易日不匹配)。"}
     m["pct_1430"] = m["price_1430"] / m["prev_close"] - 1.0
-    m["vol_ratio_1430"] = m["cum_amt_1430"] / m["prev_amount"].replace(0, np.nan)
+    m["amt_ratio_1430"] = m["cum_amt_1430"] / m["prev_cum_amt_1430"].replace(0, np.nan)
     m["ret_t1"] = m["next_close"] / m["price_1430"] - 1.0          # 14:30 买 → 次日收盘卖
 
     end = m[(m["pct_1430"] >= 0.03) & (m["pct_1430"] <= 0.08)
-            & (m["pos_1430"] >= 0.5) & (m["price_1430"] >= m["open_"])
-            & (m["vol_ratio_1430"] >= 1.0)].copy()
+            & (m["pos_1430"] >= 0.5) & (m["price_1430"] >= m["open"])   # 强于今开(日线开盘价)
+            & (m["amt_ratio_1430"] >= 1.0)].copy()                      # 同时段放量
     s = _stats(end["ret_t1"])
     day_base = m.groupby("d")["uni_t1"].mean()
     end["base"] = end["d"].map(day_base)
     excess = (end["ret_t1"] - end["base"]).dropna()
     ex = float(excess.mean()) if len(excess) else float("nan")
 
+    enough = len(syms) >= _MIN_SYMS_FOR_LABEL and s["n"] >= _MIN_SIGNALS_FOR_LABEL
+    if not enough:
+        tag = "⚠ 覆盖/样本不足, 不做定性判断"
+    elif ex > 0.0005:
+        tag = "✅ 有正超额"
+    elif ex < -0.0005:
+        tag = "❌ 无/为负"
+    else:
+        tag = "≈0 无效"
+
     d0, d1 = m["d"].min().date(), m["d"].max().date()
     L = ["╔" + "═" * 60,
          f"║ 尾盘策略·分钟精确版({freq}) · {len(syms)}只覆盖个股 · {d0}~{d1}",
-         "║ 真实14:30入场(取代15:00近似): 涨幅3~8%@14:30 + 收高位@14:30 + 强于今开 + 放量@14:30",
+         "║ 真实14:30入场(取代15:00近似): 涨幅3~8%@14:30 + 收高位@14:30 + 强于今开 + 同时段放量",
          "╠" + "═" * 60,
          f"║ 信号样本 {s['n']} · 胜率(次日收>14:30) {s['win']*100:5.1f}% · "
          f"均值 {s['mean']*100:+.2f}% · 中位 {s['median']*100:+.2f}%",
-         f"║ ➤ 相对覆盖内个股当日T+1超额: {ex*100:+.2f}%  "
-         f"{'✅ 有正超额' if ex > 0.0005 else '❌ 无/为负' if ex < -0.0005 else '≈0 无效'}",
+         f"║ ➤ 相对覆盖内个股当日T+1超额: {ex*100:+.2f}%  {tag}",
          "╚" + "═" * 60,
-         f"注: 覆盖仅 minute_bar 已落库的 {len(syms)} 只(非全主板)→ 样本有限, 全主板需扩 backfill-min;",
-         "    14:30→次日收, 理想成交(无滑点/冲击/涨停打不进); 幸存者偏差偏乐观; edge 是概率非保证。"]
-    return {"ok": True, "n": s["n"], "win": s["win"], "excess": ex, "text": "\n".join(L)}
+         f"注: 覆盖仅 minute_bar 已落库的 {len(syms)} 只(来源=持仓+自选, 非历史全主板, 有选择偏差);",
+         f"    定性判断需覆盖≥{_MIN_SYMS_FOR_LABEL}只且信号≥{_MIN_SIGNALS_FOR_LABEL}; "
+         "14:30→次日收, 理想成交; 幸存者偏差偏乐观; edge 是概率非保证。"]
+    return {"ok": True, "n": s["n"], "win": s["win"], "excess": ex,
+            "enough": enough, "text": "\n".join(L)}

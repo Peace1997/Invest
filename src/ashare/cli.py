@@ -382,6 +382,21 @@ def cmd_value_backfill(cfg, con, src, args=None):
     backfill_value_universe(con, force=force, full=full)
 
 
+def _drop_nonstock(con, syms: set[str]) -> set[str]:
+    """剔除已知非个股(stk_mins 仅支持个股): instruments 里 type<>'stock' 的排除, 未知的保留。
+    默认路径与手动 --symbols 路径共用, 保证过滤一致。"""
+    if not syms:
+        return syms
+    try:
+        qs = ",".join(["?"] * len(syms))
+        nonstock = {r[0] for r in con.execute(
+            f"SELECT symbol FROM instruments WHERE symbol IN ({qs}) AND type<>'stock'",
+            list(syms)).fetchall()}
+        return syms - nonstock
+    except Exception:  # noqa: BLE001
+        return syms
+
+
 def _minute_symbols(cfg, con) -> list[str]:
     """分钟落库标的 = config minute.watchlist + 持仓个股(positions.yaml). 仅个股。"""
     mcfg = cfg.get("minute", {}) or {}
@@ -393,7 +408,15 @@ def _minute_symbols(cfg, con) -> list[str]:
             syms |= {h.code.zfill(6) for h in pf.holdings if h.type == "stock"}
     except Exception:  # noqa: BLE001 - 无持仓文件不致命
         pass
-    return sorted(syms)
+    return sorted(_drop_nonstock(con, syms))
+
+
+def _minute_sleep(cfg) -> float:
+    """分钟采集每窗 sleep: 优先 config minute.sleep, 否则复用 rate_limit.per_call_sleep。"""
+    mcfg = cfg.get("minute", {}) or {}
+    if mcfg.get("sleep") is not None:
+        return float(mcfg["sleep"])
+    return float((cfg.get("rate_limit", {}) or {}).get("per_call_sleep", 0.2))
 
 
 def cmd_backfill_min(cfg, con, src, args=None):
@@ -405,15 +428,21 @@ def cmd_backfill_min(cfg, con, src, args=None):
     mcfg = cfg.get("minute", {}) or {}
     freq = getattr(args, "freq", None) or mcfg.get("freq", DEFAULT_FREQ)
     raw = getattr(args, "symbols", None)
-    syms = [s.strip().zfill(6) for s in raw.split(",") if s.strip()] if raw else _minute_symbols(cfg, con)
+    if raw:
+        syms = sorted(_drop_nonstock(con, {s.strip().zfill(6) for s in raw.split(",") if s.strip()}))
+    else:
+        syms = _minute_symbols(cfg, con)
     if not syms:
         print("无分钟标的: config.yaml minute.watchlist 为空且无持仓。用 --symbols 指定。")
         return
     end = getattr(args, "end", None) or date.today().strftime("%Y%m%d")
     start = getattr(args, "start", None) or (
         date.today() - timedelta(days=int(mcfg.get("history_days", 365)))).strftime("%Y%m%d")
+    if start.replace("-", "") > end.replace("-", ""):
+        print(f"❌ start({start}) 晚于 end({end}), 请检查日期。")
+        return
     print(f"⏳ 分钟回填 {freq} · {len(syms)}只个股 · {start}→{end} (按窗口分块, 仅个股)...")
-    res = ingest_minute_bars(con, syms, start, end, freq=freq)
+    res = ingest_minute_bars(con, syms, start, end, freq=freq, sleep=_minute_sleep(cfg))
     print(f"✅ 完成: 成功{res['symbols']}只 · {res['rows']}行 · 失败{len(res['failed'])}只")
     for c, m in res["failed"][:10]:
         print(f"  ❌ {c}  {m}")
@@ -434,7 +463,7 @@ def cmd_min_update(cfg, con, src, args=None):
     end = date.today().strftime("%Y%m%d")
     start = (date.today() - timedelta(days=days)).strftime("%Y%m%d")
     print(f"⏳ 分钟增量 {freq} · {len(syms)}只 · 近{days}天 ({start}→{end})...")
-    res = ingest_minute_bars(con, syms, start, end, freq=freq)
+    res = ingest_minute_bars(con, syms, start, end, freq=freq, sleep=_minute_sleep(cfg))
     print(f"✅ 完成: 成功{res['symbols']}只 · {res['rows']}行 · 失败{len(res['failed'])}只")
 
 
