@@ -35,8 +35,8 @@ watchlist_otc_funds:    # 场外联接 C 类, Phase 1 处理
 # 密钥放 gitignored 的 .anthropic_key 文件 或 环境变量 ANTHROPIC_API_KEY
 sentiment:
   enabled: true
-  model: deepseek-v4-pro             # aihubmix 上的 DeepSeek V4 Pro (推理模型)
-  base_url: https://aihubmix.com/v1  # OpenAI 兼容中转端点(aihubmix)
+  model: deepseek/deepseek-v4-pro      # DeepSeek V4 Pro (推理模型)
+  base_url: https://aiapi.lejurobot.com/v1   # OpenAI 兼容中转端点
   max_headlines: 80                  # 喂给 LLM 的标题上限(控 token 成本)
 
 # 盘中预警 (交易时段每5分钟查持仓+大盘实时价, 触发阈值推送; 免 token)

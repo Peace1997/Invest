@@ -468,11 +468,11 @@ def cmd_min_update(cfg, con, src, args=None):
 
 
 def cmd_ui(cfg, con, src):
-    """Launch the Streamlit dashboard (browser-based 持仓看板)."""
+    """Launch the Streamlit Financial Analysis app."""
     import subprocess, sys
     from pathlib import Path
     app = Path(__file__).with_name("ui") / "app.py"
-    print(f"🚀 启动看板: http://localhost:8501  (Ctrl-C 停止)")
+    print(f"🚀 启动 Financial Analysis: http://localhost:8501  (Ctrl-C 停止)")
     con.close()  # let streamlit's own process own the DB
     subprocess.run([sys.executable, "-m", "streamlit", "run", str(app),
                     "--server.headless", "true", "--browser.gatherUsageStats", "false"])

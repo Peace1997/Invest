@@ -1,4 +1,4 @@
-"""Streamlit dashboard — 持仓看板 (ROADMAP Phase 8, TradingView-style).
+"""Streamlit app — Financial Analysis.
 
 Reuses the existing layers (no logic forked here):
   portfolio  → 估值     signals → 健康分/温度计     decision → 操作建议
@@ -9,7 +9,7 @@ Run:  uv run streamlit run src/ashare/ui/app.py
 """
 from __future__ import annotations
 import os
-from datetime import date
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -26,17 +26,27 @@ from ashare.config import load, resolve_path
 from ashare.storage import open_db, init_schema
 from ashare.sources import AkSource
 from ashare.portfolio import load_positions, value_portfolio, Holding
-from ashare.signals import score_portfolio, index_timing, recommend_stocks
+from ashare.signals import score_portfolio, index_timing, recommend_stocks, recommend_index_funds
 from ashare.decision import generate_advice, compute_price_levels
 from ashare.snapshots import load_history, snapshot_portfolio, max_drawdown
 from ashare.factors.nav import nav_history
 from ashare.risk import portfolio_risk, render_risk
 from ashare.rebalance import rebalance_plan, render_rebalance
-from ashare.signals.sentiment import latest_sentiment, sentiment_history
+from ashare.ingest.news import ingest_news
+from ashare.signals.sentiment import generate_sentiment, latest_sentiment, sentiment_history
 
-st.set_page_config(page_title="A股持仓看板", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Financial Analysis", page_icon="📈", layout="wide")
 
 UP, DN = "#e23b3b", "#1aae5c"   # A股惯例: 红涨绿跌
+
+MONITOR_INTERVAL = timedelta(seconds=60)
+ALERT_RULES = [
+    ("重大风险", 3, ("战争", "袭击", "爆炸", "制裁", "关税", "违约", "破产", "暴雷", "退市", "停牌", "熔断")),
+    ("政策监管", 2, ("国务院", "证监会", "央行", "财政部", "发改委", "监管", "降准", "降息", "IPO", "印花税")),
+    ("宏观冲击", 2, ("美联储", "CPI", "非农", "PMI", "汇率", "人民币", "美元指数", "原油", "黄金", "国债")),
+    ("市场异动", 2, ("跳水", "大涨", "大跌", "创阶段新高", "创阶段新低", "北向", "成交额", "恐慌")),
+    ("产业主题", 1, ("半导体", "芯片", "人工智能", "算力", "新能源", "光伏", "医药", "房地产", "低空经济")),
+]
 
 
 # ── shared resources (one instance, reused across reruns) ──
@@ -47,8 +57,9 @@ def get_cfg():
 
 @st.cache_resource
 def get_con():
-    # read-only: the dashboard never writes, and this keeps its lock from
-    # silently blocking CLI write-jobs more than necessary.
+    # The sentiment page refreshes live news and writes the latest AI summary.
+    # Keep one app-owned read/write connection so DuckDB does not reject a
+    # second connection with a different read_only configuration.
     # 刷新窗口(15:15/20:00 cron 跑 `cli daily` 时会独占写锁)里, DuckDB 会拒绝本连接 →
     # 别让整个看板抛栈, 退避重试几次, 仍锁住就友好提示并停渲染(而非红色 Traceback)。
     import time as _time
@@ -56,7 +67,7 @@ def get_con():
     path = resolve_path(cfg, "warehouse")
     for attempt in range(4):
         try:
-            return open_db(path, read_only=True)
+            return open_db(path, read_only=False)
         except Exception as e:  # noqa: BLE001
             if "lock" not in str(e).lower():
                 raise
@@ -97,6 +108,15 @@ def load_recommendations(top_n: int = 12, style: str = "momentum"):
     return stocks, uni
 
 
+@st.cache_data(ttl=1800, show_spinner="指数基金打分中…")
+def load_index_fund_recommendations(top_n: int = 9,
+                                    held_codes: tuple[str, ...] = (),
+                                    extra_items: tuple[tuple[str, str, str], ...] = ()):
+    con = get_con()
+    extra = {code: (name, kind) for code, name, kind in extra_items}
+    return recommend_index_funds(con, top_n=top_n, held=set(held_codes), extra_funds=extra)
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def load_live_quotes(codes: tuple[str, ...]) -> dict:
     """Live current price for a handful of codes (Tencent, ~1 call). Scores/levels
@@ -116,6 +136,140 @@ def load_live_quotes(codes: tuple[str, ...]) -> dict:
 def bars_as_of() -> object:
     """Latest trade_date in daily_bar — used to warn when the warehouse is stale."""
     return get_con().execute("SELECT max(trade_date) FROM daily_bar").fetchone()[0]
+
+
+def _news_for_day(con, day: date | object | None = None) -> pd.DataFrame:
+    """Latest ingested news for display. Returns an empty DataFrame if none."""
+    if day is None:
+        day = con.execute("SELECT max(news_date) FROM news_raw").fetchone()[0]
+    if day is None:
+        return pd.DataFrame(columns=["source", "title", "summary", "ts", "url"])
+    return con.execute(
+        "SELECT source, title, summary, ts, url FROM news_raw WHERE news_date=? "
+        "ORDER BY ts DESC NULLS LAST", [day]).df()
+
+
+def _source_counts(news: pd.DataFrame) -> dict[str, int]:
+    if news is None or news.empty:
+        return {}
+    return {str(k): int(v) for k, v in news.groupby("source").size().items()}
+
+
+def _news_key(r) -> str:
+    return f"{getattr(r, 'source', '')}|{getattr(r, 'title', '')}"
+
+
+def _alert_for_news(r) -> dict | None:
+    text = f"{getattr(r, 'title', '')} {getattr(r, 'summary', '')}"
+    hits = []
+    severity = 0
+    for label, weight, words in ALERT_RULES:
+        matched = [w for w in words if w in text]
+        if matched:
+            hits.append(f"{label}: " + "、".join(matched[:3]))
+            severity = max(severity, weight)
+    if not hits:
+        return None
+    if len(hits) >= 2:
+        severity = min(3, severity + 1)
+    return {
+        "severity": severity,
+        "title": str(getattr(r, "title", "")),
+        "source": str(getattr(r, "source", "")),
+        "ts": getattr(r, "ts", None),
+        "url": getattr(r, "url", None),
+        "reasons": hits,
+    }
+
+
+def _monitor_news_once(force: bool = False, reset: bool = False) -> dict:
+    """Poll news sources once and flag newly observed breaking-risk headlines."""
+    con, ak = get_con(), get_ak()
+    init_schema(con)
+    now = datetime.now()
+    if reset:
+        st.session_state["news_monitor_seen"] = set()
+        st.session_state["news_monitor_ready"] = False
+
+    try:
+        inserted = ingest_news(con, ak, date.today())
+        error = None
+    except Exception as e:  # noqa: BLE001
+        inserted, error = 0, str(e)
+
+    news = _news_for_day(con, date.today())
+    keys = {_news_key(r) for r in news.itertuples()} if not news.empty else set()
+    seen = st.session_state.get("news_monitor_seen")
+    ready = bool(st.session_state.get("news_monitor_ready", False))
+
+    if seen is None or not ready:
+        new_rows = []
+        st.session_state["news_monitor_ready"] = True
+    else:
+        new_rows = [r for r in news.itertuples() if _news_key(r) not in seen]
+
+    st.session_state["news_monitor_seen"] = keys
+    st.session_state["news_monitor_last_check"] = now
+
+    alerts = []
+    for r in new_rows:
+        a = _alert_for_news(r)
+        if a:
+            alerts.append(a)
+    alerts.sort(key=lambda x: x["severity"], reverse=True)
+
+    return {
+        "at": now,
+        "inserted": inserted,
+        "error": error,
+        "news": news,
+        "new_rows": new_rows,
+        "alerts": alerts,
+        "source_counts": _source_counts(news),
+        "force": force,
+    }
+
+
+def _refresh_sentiment_now(force: bool = False) -> dict:
+    """Refresh live news + today's AI sentiment summary for the sentiment page."""
+    now = datetime.now()
+    if not force:
+        last = st.session_state.get("sentiment_refresh_at")
+        if last and now - last < timedelta(minutes=5):
+            return {"skipped": "recent", "at": last}
+
+    con, ak, cfg = get_con(), get_ak(), get_cfg()
+    init_schema(con)
+    try:
+        row = generate_sentiment(con, ak, cfg.get("sentiment", {}), as_of=date.today())
+    except Exception as e:  # noqa: BLE001
+        st.session_state["sentiment_refresh_at"] = now
+        return {"error": str(e), "at": now}
+
+    st.session_state["sentiment_refresh_at"] = now
+    latest = latest_sentiment(con)
+    news = _news_for_day(con, date.today())
+    return {
+        "row": row,
+        "latest": latest,
+        "news_count": int(len(news)),
+        "source_counts": _source_counts(news),
+        "at": now,
+    }
+
+
+@st.cache_data(ttl=300)
+def get_fund_sparkline(code: str) -> pd.DataFrame:
+    df = get_con().execute(
+        "SELECT trade_date, close FROM daily_bar WHERE symbol=? AND type='etf' "
+        "ORDER BY trade_date DESC LIMIT 90", [code.zfill(6)]).df()
+    if df is None or df.empty:
+        df = get_con().execute(
+            "SELECT nav_date AS trade_date, nav AS close FROM fund_nav WHERE symbol=? "
+            "ORDER BY nav_date DESC LIMIT 90", [code.zfill(6)]).df()
+    if df is None or df.empty:
+        return pd.DataFrame()
+    return df.sort_values("trade_date")
 
 
 @st.cache_data(ttl=300)
@@ -261,41 +415,69 @@ def _color(v):
     return f"color:{UP}" if v > 0 else f"color:{DN}" if v < 0 else "color:#888"
 
 
+def _pct_text(v) -> str:
+    if v is None or pd.isna(v):
+        return "—"
+    return f"{float(v):+.2f}%"
+
+
+def _sparkline_fig(df: pd.DataFrame, color: str) -> go.Figure:
+    fig = go.Figure()
+    if df is not None and not df.empty:
+        fig.add_trace(go.Scatter(
+            x=df["trade_date"], y=df["close"], mode="lines",
+            line=dict(color=color, width=2), hoverinfo="skip"))
+    fig.update_layout(height=82, margin=dict(l=0, r=0, t=4, b=0),
+                      xaxis=dict(visible=False), yaxis=dict(visible=False),
+                      showlegend=False, plot_bgcolor="white", paper_bgcolor="white")
+    return fig
+
+
+def render_index_fund_cards(funds, desc: str):
+    st.markdown("#### 指数基金买卖观察")
+    st.caption(f"{desc} · 策略分=趋势/动量/RSI/估值分位综合, 规则提示非投资指令")
+    if not funds:
+        st.info("暂无可评分的指数基金 — 先跑 `daily --universe all` 或补齐 ETF / 场外基金净值。")
+        return
+
+    live = load_live_quotes(tuple(s.target for s in funds if s.metadata.get("type") == "etf"))
+    for start in range(0, len(funds), 3):
+        cols = st.columns(3)
+        for col, s in zip(cols, funds[start:start + 3]):
+            m = s.metadata
+            q = live.get(s.target)
+            price = q["price"] if q else m.get("close")
+            pct = q["pct"] if q else m.get("today_pct")
+            price_txt = "n/a" if price is None or pd.isna(price) else f"{float(price):.3f}"
+            tone = UP if s.score >= 0 else DN
+            with col.container(border=True):
+                top = st.columns([0.68, 0.32])
+                top[0].markdown(f"**{m.get('name', s.target)}**")
+                top[0].caption(f"{s.target} · {m.get('theme', '指数基金')}")
+                top[1].markdown(f"**{m.get('posture')}**")
+                top[1].caption(f"策略分 {m.get('strategy_score')}")
+
+                st.metric("现价/净值", price_txt, _pct_text(pct))
+                spark = get_fund_sparkline(s.target)
+                st.plotly_chart(_sparkline_fig(spark, tone), use_container_width=True,
+                                config={"displayModeBar": False})
+
+                k = st.columns(3)
+                k[0].metric("日涨跌", _pct_text(pct), delta_color="off")
+                k[1].metric("周涨跌", _pct_text(m.get("week_pct")), delta_color="off")
+                k[2].metric("月涨跌", _pct_text(m.get("month_pct")), delta_color="off")
+
+                st.markdown(f"**{m.get('action')}**")
+                for b in m.get("bullets", [])[:4]:
+                    st.caption("• " + b)
+
+
 # ════════════════════════════ layout ════════════════════════════
-bundle = load_bundle()
-pf, health, advice, timing, history = bundle
+st.sidebar.title("Financial Analysis")
+st.sidebar.caption("当前仅开放: 舆情分析")
 
-st.sidebar.title("📈 A股持仓看板")
-if st.sidebar.button("🔄 刷新数据", use_container_width=True):
-    load_bundle.clear()
-    get_series.clear()
-    st.rerun()
-st.sidebar.caption("数据缓存 5 分钟；点刷新立即重取")
-
-if pf is None or not pf.holdings:
-    st.warning("未找到 positions.yaml 或没有有效持仓。")
-    st.stop()
-
-# market thermometer in sidebar
-if timing is not None:
-    st.sidebar.divider()
-    st.sidebar.metric(f"大盘择时 · {timing.label}", f"score {timing.score:+.2f}")
-    st.sidebar.caption(timing.reason)
-
-st.sidebar.divider()
-adv_by_code = {a.code: a for a in advice}
-nav_options = ["📊 持仓总览", "📰 舆情分析", "💡 操作建议", "🛡 组合风控", "🎯 选股推荐", "🔎 个股速评", "✏️ 持仓管理"]
-ranked = sorted(pf.valued, key=lambda h: (health.get(h.code).score if health.get(h.code) else 0),
-                reverse=True)
-label_to_holding = {}
-for h in ranked:
-    sig = health.get(h.code)
-    dot = "🟢" if (sig and sig.score >= 0.15) else "🔴" if (sig and sig.score <= -0.15) else "⚪"
-    lbl = f"{dot} {h.name[:12]}"
-    label_to_holding[lbl] = h
-    nav_options.append(lbl)
-
-page = st.sidebar.radio("导航", nav_options, label_visibility="collapsed")
+pf, health, advice, timing, history = None, {}, [], None, pd.DataFrame()
+adv_by_code, label_to_holding = {}, {}
 
 
 def _sentiment_card():
@@ -424,34 +606,71 @@ def page_risk():
 
 
 def page_sentiment():
-    st.subheader("📰 舆情分析 · 国内外财经政经新闻")
+    st.subheader("舆情分析 · News & Sentiment Monitor")
+    st.caption("流式新闻监控每 60 秒轮询新闻源；突发预警先用本地事件规则识别，AI 总结按需生成。")
     con = get_con()
+
+    _live_news_monitor()
+
+    st.divider()
+    csum = st.columns([0.72, 0.28])
+    csum[0].markdown("##### AI 市场舆情总结")
+    with csum[1]:
+        summarize = st.button("生成/更新AI总结", use_container_width=True)
+    if summarize:
+        with st.spinner("基于当前新闻生成 AI 舆情总结…"):
+            refresh = _refresh_sentiment_now(force=True)
+        if refresh.get("error"):
+            st.warning(f"AI 总结失败: {refresh['error']}。下方展示最近一次已保存的舆情分析。")
+        elif refresh.get("row") is None:
+            st.warning("新闻已更新，但 AI 舆情总结未生成，可能是无新闻、未配置密钥或模型调用失败。")
+        else:
+            st.success("AI 舆情总结已更新。")
+
     sent = latest_sentiment(con)
     if not sent:
-        st.info("暂无舆情数据 — 服务器每日 20:00 自动生成(`ashare sentiment`/`daily`), 需 LLM 密钥。")
+        news = _news_for_day(con, date.today())
+        if not news.empty:
+            st.info("已拉到最新新闻，但暂未生成 AI 舆情总结。请检查 LLM 密钥或模型配置。")
+            _render_news_feed(news, date.today())
+        else:
+            st.info("暂无舆情数据，也没有拉到今日新闻。请检查新闻源网络或稍后再刷新。")
         return
+
     as_of = str(sent["as_of_date"])[:10]
     score = float(sent["score"])
+    created = sent.get("created_at")
+    created_txt = pd.Timestamp(created).strftime("%Y-%m-%d %H:%M:%S") if created is not None and pd.notna(created) else "n/a"
     if as_of < date.today().isoformat():
         st.warning(f"⚠ 最新舆情停留在 {as_of}(非今日)——今日可能尚未生成, 或新闻源/LLM 异常。"
                    "下方为最近一次分析, 已诚实标注日期。")
 
-    arrow = "🔺" if score > 0.1 else "🔻" if score < -0.1 else "➖"
-    c1, c2 = st.columns([0.28, 0.72])
+    arrow = "Risk-on" if score > 0.1 else "Risk-off" if score < -0.1 else "Neutral"
+    c1, c2 = st.columns([0.26, 0.74])
     with c1:
-        st.metric(f"市场情绪 {arrow} {sent['label']}", f"{score:+.2f}",
+        st.metric(f"{arrow} · {sent['label']}", f"{score:+.2f}",
                   help="-1 极空/恐慌 ~ 0 中性 ~ +1 极多/亢奋")
         st.caption(f"基于 {int(sent['n_news'])} 条新闻 · {as_of}")
-        st.caption(f"🤖 AI生成({sent.get('model','')}) · 仅供参考非投资建议")
+        st.caption(f"生成时间 {created_txt}")
+        st.caption(f"AI生成({sent.get('model','')}) · 仅供参考非投资建议")
     with c2:
         st.markdown(f"#### {sent['summary']}")
-        st.markdown(f"🔺 **利好主题**:{sent.get('bullish') or '—'}")
-        st.markdown(f"🔻 **利空主题**:{sent.get('bearish') or '—'}")
+        cols = st.columns(2)
+        cols[0].markdown("**机会/正面主题**")
+        for item in [x for x in str(sent.get("bullish") or "").split("；") if x]:
+            cols[0].caption("• " + item)
+        if not sent.get("bullish"):
+            cols[0].caption("—")
+        cols[1].markdown("**风险/负面主题**")
+        for item in [x for x in str(sent.get("bearish") or "").split("；") if x]:
+            cols[1].caption("• " + item)
+        if not sent.get("bearish"):
+            cols[1].caption("—")
 
     st.divider()
     hist = sentiment_history(con, days=30).sort_values("as_of_date")
     if len(hist) >= 2:
-        st.markdown("##### 📈 情绪走势(近30个有数据的交易日)")
+        st.markdown("##### 情绪走势(近30个有数据的交易日)")
         cols = [UP if s > 0.1 else DN if s < -0.1 else "#8395a7" for s in hist["score"]]
         fig = go.Figure(go.Scatter(
             x=hist["as_of_date"].astype(str), y=hist["score"], mode="lines+markers",
@@ -462,17 +681,72 @@ def page_sentiment():
                           yaxis=dict(range=[-1, 1], title="情绪分"))
         st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("##### 🗞 当日源新闻")
-    st.caption("舆情结论即基于下列真实新闻 · 财经快讯含海外宏观/外盘, 新闻联播为国内政策面 · "
-               "更深的国际政治/外媒覆盖需再接专门源")
     nd = con.execute("SELECT max(news_date) FROM news_raw").fetchone()[0]
-    if nd is None:
+    news = _news_for_day(con, nd)
+    _render_news_feed(news, nd)
+
+
+@st.fragment(run_every=MONITOR_INTERVAL)
+def _live_news_monitor():
+    st.markdown("##### 实时新闻监控")
+    ctrl = st.columns([0.2, 0.2, 0.6])
+    force = ctrl[0].button("立即轮询", use_container_width=True)
+    reset = ctrl[1].button("重置基线", use_container_width=True)
+    res = _monitor_news_once(force=force, reset=reset)
+
+    status = st.columns(4)
+    status[0].metric("监控状态", "运行中", "60秒轮询")
+    status[1].metric("本轮新增", len(res["new_rows"]))
+    status[2].metric("突发预警", len(res["alerts"]))
+    status[3].metric("源新闻", len(res["news"]))
+
+    detail = " · ".join(f"{k}:{v}" for k, v in res["source_counts"].items()) or "暂无新闻"
+    st.caption(f"上次检查 {res['at']:%H:%M:%S} · 本轮入库 {res['inserted']} 条 · {detail}")
+    if res["error"]:
+        st.warning(f"新闻源轮询失败: {res['error']}。保留页面已有新闻。")
+    if reset:
+        st.info("监控基线已重置；下一轮开始只提示新出现的新闻。")
+
+    if res["alerts"]:
+        high = [a for a in res["alerts"] if a["severity"] >= 3]
+        box = st.error if high else st.warning
+        box(f"发现 {len(res['alerts'])} 条突发新闻预警。")
+        for a in res["alerts"][:8]:
+            sev = "高" if a["severity"] >= 3 else "中" if a["severity"] == 2 else "低"
+            ts = ""
+            if a["ts"] is not None and pd.notna(a["ts"]):
+                ts = pd.Timestamp(a["ts"]).strftime("%H:%M")
+            title = a["title"]
+            if a.get("url"):
+                title = f"[{title}]({a['url']})"
+            st.markdown(f"- {ts + ' · ' if ts else ''}风险等级 {sev} · {title}")
+            st.caption("　触发: " + "；".join(a["reasons"]))
+    elif res["new_rows"]:
+        st.info(f"有 {len(res['new_rows'])} 条新增新闻，未触发突发规则。")
+    else:
+        st.caption("暂无新增新闻。")
+
+    if res["new_rows"]:
+        with st.expander("本轮新增新闻", expanded=True):
+            for r in res["new_rows"][:12]:
+                ts = ""
+                if pd.notna(r.ts):
+                    ts = pd.Timestamp(r.ts).strftime("%H:%M")
+                title = str(r.title)
+                if getattr(r, "url", None):
+                    title = f"[{title}]({r.url})"
+                st.markdown(f"- {ts + ' · ' if ts else ''}{title}")
+                if isinstance(r.summary, str) and r.summary.strip():
+                    st.caption("　" + r.summary[:120])
+
+
+def _render_news_feed(news: pd.DataFrame, nd):
+    st.markdown("##### 源新闻流")
+    st.caption("当前源: 东财全球财经快讯 + 新闻联播。舆情总结只基于这里展示的入库新闻；更深的外媒、社媒、个股实体识别和突发事件预警需要继续接源。")
+    if news is None or news.empty:
         st.caption("暂无入库新闻。")
         return
-    news = con.execute(
-        "SELECT source, title, summary, ts FROM news_raw WHERE news_date=? "
-        "ORDER BY ts DESC NULLS LAST", [nd]).df()
-    label_map = {"em_global": "📈 财经快讯(含海外宏观/外盘)", "cctv": "🏛 新闻联播(国内政策面)"}
+    label_map = {"em_global": "财经快讯(含海外宏观/外盘)", "cctv": "新闻联播(国内政策面)"}
     st.caption(f"新闻日期 {nd} · 共 {len(news)} 条")
     for code, grp in news.groupby("source"):
         with st.expander(f"{label_map.get(code, code)} · {len(grp)} 条",
@@ -481,10 +755,14 @@ def page_sentiment():
                 t = ""
                 if pd.notna(r.ts):
                     try:
-                        t = pd.to_datetime(r.ts).strftime("%H:%M ")
+                        t = pd.to_datetime(r.ts).strftime("%H:%M")
                     except Exception:  # noqa: BLE001
                         t = ""
-                st.markdown(f"- **{t}**{r.title}")
+                title = str(r.title)
+                if getattr(r, "url", None):
+                    title = f"[{title}]({r.url})"
+                prefix = f"{t} · " if t else ""
+                st.markdown(f"- {prefix}{title}")
                 if isinstance(r.summary, str) and r.summary.strip() and r.summary.strip() != str(r.title).strip():
                     st.caption("　" + r.summary[:120])
 
@@ -568,7 +846,16 @@ def page_positions():
 
 
 def page_recommend():
-    st.subheader("🎯 选股推荐")
+    st.subheader("🎯 推荐")
+    fund_held = tuple(sorted(h.code for h in pf.holdings if h.type in ("etf", "otc_fund")))
+    extra_items = tuple(sorted(
+        (h.code, h.name, h.type) for h in pf.holdings if h.type in ("otc_fund",)
+    ))
+    funds, fdesc = load_index_fund_recommendations(9, fund_held, extra_items)
+    render_index_fund_cards(funds, fdesc)
+
+    st.divider()
+    st.markdown("#### 主板个股推荐")
     # 稳健·价值版默认(最稳的"筛选+排雷"); 反转版有3-5年正超额但近1年衰减为负, 仅作可选项
     style_label = st.radio("打分风格",
                            ["稳健·价值版", "反转·超跌版(近年衰减⚠)", "自上而下·龙头版", "动量版(回测负超额⚠)"],
@@ -704,22 +991,7 @@ def page_holding(h: Holding):
     st.plotly_chart(fig, use_container_width=True)
 
 
-if page == "📊 持仓总览":
-    page_overview()
-elif page == "📰 舆情分析":
-    page_sentiment()
-elif page == "💡 操作建议":
-    page_advice()
-elif page == "🛡 组合风控":
-    page_risk()
-elif page == "🎯 选股推荐":
-    page_recommend()
-elif page == "🔎 个股速评":
-    page_stockeval()
-elif page == "✏️ 持仓管理":
-    page_positions()
-else:
-    page_holding(label_to_holding[page])
+page_sentiment()
 
 st.sidebar.divider()
-st.sidebar.caption(f"快照日 {date.today().isoformat()} · 红涨绿跌 · 个股实时·基金T-1")
+st.sidebar.caption(f"日期 {date.today().isoformat()}")

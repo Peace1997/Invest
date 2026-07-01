@@ -115,7 +115,7 @@ def _parse(raw: str) -> dict | None:
 
 def latest_sentiment(con) -> dict | None:
     df = con.execute(
-        "SELECT as_of_date, score, label, summary, bullish, bearish, n_news, model "
+        "SELECT as_of_date, score, label, summary, bullish, bearish, n_news, model, created_at "
         "FROM sentiment_daily ORDER BY as_of_date DESC LIMIT 1").df()
     if df.empty:
         return None
