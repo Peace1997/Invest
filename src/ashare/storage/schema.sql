@@ -228,6 +228,76 @@ CREATE TABLE IF NOT EXISTS news_raw (
 );
 CREATE INDEX IF NOT EXISTS idx_news_date ON news_raw(news_date);
 
+-- 可配置资讯源. 先用于新闻/舆情采集扩展, 避免把来源硬编码在 ingest_news.py。
+-- scope_type: market | stock | sector | concept | macro
+CREATE TABLE IF NOT EXISTS intelligence_source (
+    name            VARCHAR PRIMARY KEY,
+    source_type     VARCHAR NOT NULL,  -- akshare | rss | api | html | custom
+    url             VARCHAR,
+    enabled         BOOLEAN DEFAULT TRUE,
+    scope_type      VARCHAR NOT NULL DEFAULT 'market',
+    scope_value     VARCHAR,
+    market          VARCHAR NOT NULL DEFAULT 'cn',
+    description     VARCHAR,
+    last_status     VARCHAR,
+    last_error      VARCHAR,
+    last_fetched_at TIMESTAMP,
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_intel_source_scope
+    ON intelligence_source(scope_type, scope_value, market);
+
+INSERT INTO intelligence_source
+    (name, source_type, enabled, scope_type, scope_value, market, description)
+VALUES
+    ('em_global', 'akshare', TRUE, 'market', NULL, 'cn', '东方财富全球财经快讯'),
+    ('cctv', 'akshare', TRUE, 'market', NULL, 'cn', '央视新闻联播文字稿')
+ON CONFLICT (name) DO NOTHING;
+
+-- 新闻结构化派生层: UI/策略不再只能临时从 title/summary 里扫关键词。
+-- news_key = sha1(news_date|source|title) 或其它稳定 id, 由写入端生成。
+CREATE TABLE IF NOT EXISTS news_signal (
+    news_key     VARCHAR PRIMARY KEY,
+    news_date    DATE    NOT NULL,
+    source       VARCHAR NOT NULL,
+    title        VARCHAR NOT NULL,
+    local_score  DOUBLE,           -- 本地词典/规则评分, 例如 -5~+5
+    risk_level   INTEGER,          -- 0~3
+    polarity     VARCHAR,          -- 偏多 | 中性 | 偏空
+    reasons      VARCHAR,          -- JSON/分号文本: 触发规则
+    themes       VARCHAR,          -- JSON/分号文本: 主题标签
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_news_signal_date ON news_signal(news_date);
+CREATE INDEX IF NOT EXISTS idx_news_signal_risk ON news_signal(risk_level, news_date);
+
+CREATE TABLE IF NOT EXISTS news_tag (
+    news_key   VARCHAR NOT NULL,
+    tag        VARCHAR NOT NULL,
+    tag_type   VARCHAR NOT NULL,   -- theme | source_tag | risk | policy | macro | custom
+    confidence DOUBLE,
+    source     VARCHAR,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (news_key, tag_type, tag)
+);
+CREATE INDEX IF NOT EXISTS idx_news_tag_tag ON news_tag(tag_type, tag);
+
+CREATE TABLE IF NOT EXISTS news_entity (
+    news_key     VARCHAR NOT NULL,
+    entity_type  VARCHAR NOT NULL, -- stock | index | sector | concept | macro | fund
+    symbol       VARCHAR NOT NULL DEFAULT '',
+    name         VARCHAR NOT NULL DEFAULT '',
+    match_text   VARCHAR NOT NULL DEFAULT '',
+    confidence   DOUBLE,
+    source       VARCHAR,
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (news_key, entity_type, symbol, name, match_text)
+);
+CREATE INDEX IF NOT EXISTS idx_news_entity_symbol ON news_entity(entity_type, symbol);
+CREATE INDEX IF NOT EXISTS idx_news_entity_name ON news_entity(entity_type, name);
+
 -- 每日舆情分析 (Claude 基于 news_raw 生成). 可解释 + 留档复盘. 一天一行.
 CREATE TABLE IF NOT EXISTS sentiment_daily (
     as_of_date DATE PRIMARY KEY,
@@ -240,6 +310,80 @@ CREATE TABLE IF NOT EXISTS sentiment_daily (
     model      VARCHAR,           -- 生成模型 id (诚实: 标注AI生成)
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- LLM 调用审计. 不存明文 API key; prompt_hash/input_hash 用于复盘版本。
+CREATE TABLE IF NOT EXISTS llm_run (
+    run_id            VARCHAR PRIMARY KEY,
+    task_type         VARCHAR NOT NULL,  -- sentiment | premarket | endday | stockeval | other
+    subject_type      VARCHAR,
+    subject_id        VARCHAR,
+    model             VARCHAR,
+    base_url          VARCHAR,
+    status            VARCHAR NOT NULL,  -- ok | skipped | error
+    input_count       INTEGER,
+    prompt_hash       VARCHAR,
+    input_hash        VARCHAR,
+    prompt_tokens     INTEGER,
+    completion_tokens INTEGER,
+    total_tokens      INTEGER,
+    error             VARCHAR,
+    started_at        TIMESTAMP,
+    finished_at       TIMESTAMP,
+    created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_llm_run_task_time ON llm_run(task_type, created_at);
+CREATE INDEX IF NOT EXISTS idx_llm_run_subject ON llm_run(subject_type, subject_id);
+
+-- 分析输入上下文快照. 存低敏 JSON, 用于解释“这次 AI/规则为什么这么判断”。
+CREATE TABLE IF NOT EXISTS analysis_context_snapshot (
+    run_id            VARCHAR PRIMARY KEY,
+    task_type         VARCHAR NOT NULL,
+    subject_type      VARCHAR,
+    subject_id        VARCHAR,
+    context_json      VARCHAR NOT NULL,
+    data_quality_json VARCHAR,
+    created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_context_snapshot_task_time
+    ON analysis_context_snapshot(task_type, created_at);
+
+-- 决策信号留痕: recommend/premarket/endday/pf 在产出末端 best-effort 写入。
+-- signal_id = sha1(trade_date|source|style|symbol|horizon_days) 前16位, 保证同日同源同标的幂等。
+CREATE TABLE IF NOT EXISTS decision_signal (
+    signal_id    VARCHAR PRIMARY KEY,
+    created_at   TIMESTAMP,
+    trade_date   DATE,
+    source       VARCHAR,
+    style        VARCHAR,
+    symbol       VARCHAR,
+    name         VARCHAR,
+    asset_type   VARCHAR,
+    action       VARCHAR,
+    score        DOUBLE,
+    ref_price    DOUBLE,
+    horizon_days INTEGER,
+    factors      VARCHAR,
+    rationale    VARCHAR,
+    status       VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_decision_signal_status ON decision_signal(status, trade_date);
+CREATE INDEX IF NOT EXISTS idx_decision_signal_source ON decision_signal(source, trade_date);
+
+-- 决策信号 outcome 回溯: 一条可评估信号对应一条收益结果。
+CREATE TABLE IF NOT EXISTS decision_outcome (
+    signal_id        VARCHAR PRIMARY KEY,
+    evaluated_at     TIMESTAMP,
+    end_date         DATE,
+    bars_forward     INTEGER,
+    ref_price        DOUBLE,
+    end_price        DOUBLE,
+    fwd_return_pct   DOUBLE,
+    bench_return_pct DOUBLE,
+    excess_pct       DOUBLE,
+    outcome          VARCHAR,
+    note             VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_decision_outcome_outcome ON decision_outcome(outcome);
 
 -- 北向资金: aggregated by channel. channel in {'北向','沪股通','深股通'}
 CREATE TABLE IF NOT EXISTS northbound (
@@ -254,3 +398,83 @@ CREATE TABLE IF NOT EXISTS northbound (
     holding_value  DOUBLE,   -- 持股市值
     PRIMARY KEY (trade_date, channel)
 );
+
+-- 盘中市场温度快照: 来自财联社/东方财富等宽度统计。
+-- 用于验证新闻情绪是否被市场确认。
+CREATE TABLE IF NOT EXISTS market_breadth_snapshot (
+    snap_time      TIMESTAMP NOT NULL,
+    source         VARCHAR   NOT NULL,
+    up_count       INTEGER,
+    down_count     INTEGER,
+    flat_count     INTEGER,
+    suspend_count  INTEGER,
+    avg_rise       DOUBLE,   -- 平均涨幅, %
+    up_ratio       DOUBLE,   -- 上涨家数占比, %
+    up_down_ratio  DOUBLE,   -- 上涨/下跌
+    limit_up       INTEGER,
+    limit_down     INTEGER,
+    limit_ratio    DOUBLE,
+    sentiment_desc VARCHAR,  -- 普涨/偏强/偏弱/冰点等
+    raw_json       VARCHAR,
+    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (snap_time, source)
+);
+CREATE INDEX IF NOT EXISTS idx_market_breadth_time ON market_breadth_snapshot(snap_time);
+
+-- 全球/跨市场指数快照: 盘前、夜盘和外盘风险输入。
+CREATE TABLE IF NOT EXISTS global_index_snapshot (
+    snap_time   TIMESTAMP NOT NULL,
+    source      VARCHAR   NOT NULL,
+    region      VARCHAR,
+    code        VARCHAR   NOT NULL,
+    name        VARCHAR,
+    location    VARCHAR,
+    last_price  DOUBLE,
+    pct_chg     DOUBLE,
+    state       VARCHAR,
+    raw_json    VARCHAR,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (snap_time, source, code)
+);
+CREATE INDEX IF NOT EXISTS idx_global_index_region_time
+    ON global_index_snapshot(region, snap_time);
+
+-- 行业/概念资金流快照: 用于验证新闻主题是否被资金确认。
+CREATE TABLE IF NOT EXISTS sector_fund_flow_snapshot (
+    snap_time   TIMESTAMP NOT NULL,
+    source      VARCHAR   NOT NULL,
+    scope_type  VARCHAR   NOT NULL, -- industry | concept
+    code        VARCHAR   NOT NULL,
+    name        VARCHAR,
+    net_inflow  DOUBLE,             -- 主力净流入, 元
+    raw_json    VARCHAR,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (snap_time, source, scope_type, code)
+);
+CREATE INDEX IF NOT EXISTS idx_sector_flow_scope_time
+    ON sector_fund_flow_snapshot(scope_type, snap_time);
+CREATE INDEX IF NOT EXISTS idx_sector_flow_name_time
+    ON sector_fund_flow_snapshot(name, snap_time);
+
+-- 个股异动事件: 火箭发射/高台跳水/封板/大笔买卖等, 与新闻/持仓做交叉验证。
+CREATE TABLE IF NOT EXISTS stock_change_event (
+    event_time   TIMESTAMP NOT NULL,
+    source       VARCHAR   NOT NULL,
+    symbol       VARCHAR   NOT NULL,
+    name         VARCHAR,
+    change_type  VARCHAR,
+    change_name  VARCHAR,
+    price        DOUBLE,
+    pct_chg      DOUBLE,
+    amount       DOUBLE,
+    volume       DOUBLE,
+    industry     VARCHAR,
+    concept      VARCHAR,
+    raw_json     VARCHAR,
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (event_time, source, symbol, change_type)
+);
+CREATE INDEX IF NOT EXISTS idx_stock_change_symbol_time
+    ON stock_change_event(symbol, event_time);
+CREATE INDEX IF NOT EXISTS idx_stock_change_type_time
+    ON stock_change_event(change_type, event_time);

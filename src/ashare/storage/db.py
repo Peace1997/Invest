@@ -23,24 +23,28 @@ def upsert(
     df: pd.DataFrame,
     keys: Sequence[str],
 ) -> int:
-    """Idempotent upsert via DELETE ... USING + INSERT, wrapped in a single
-    transaction so a mid-way failure can't leave rows deleted-but-not-inserted.
-    Returns row count."""
+    """Idempotent upsert using DuckDB's native ON CONFLICT.
+
+    Older DELETE ... USING + INSERT logic can invalidate DuckDB connections when
+    an indexed table hits an internal index-delete failure. Native conflict
+    handling avoids that failure mode and keeps updates atomic.
+    """
     if df is None or df.empty:
         return 0
     cols = list(df.columns)
-    key_pred = " AND ".join(f"t.{k}=s.{k}" for k in keys)
     col_list = ", ".join(cols)
+    key_list = ", ".join(keys)
+    non_keys = [c for c in cols if c not in set(keys)]
+    if non_keys:
+        conflict = "DO UPDATE SET " + ", ".join(f"{c}=excluded.{c}" for c in non_keys)
+    else:
+        conflict = "DO NOTHING"
     con.register("_stg", df)
     try:
-        con.execute("BEGIN TRANSACTION")
-        try:
-            con.execute(f"DELETE FROM {table} t USING _stg s WHERE {key_pred}")
-            con.execute(f"INSERT INTO {table} ({col_list}) SELECT {col_list} FROM _stg")
-            con.execute("COMMIT")
-        except Exception:
-            con.execute("ROLLBACK")   # 删了未插 → 整体回滚, 旧数据不丢
-            raise
+        con.execute(
+            f"INSERT INTO {table} ({col_list}) SELECT {col_list} FROM _stg "
+            f"ON CONFLICT ({key_list}) {conflict}"
+        )
     finally:
         con.unregister("_stg")
     return len(df)

@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import date
+from datetime import date, datetime
 
 import pandas as pd
 
@@ -95,6 +95,7 @@ def generate_sentiment(con, src, cfg: dict | None = None,
         "bearish": "；".join(data.get("bearish", []) or [])[:500],
         "n_news": int(len(news)),
         "model": model,
+        "created_at": datetime.now(),
     }
     upsert(con, "sentiment_daily", pd.DataFrame([row]), ["as_of_date"])
     return row

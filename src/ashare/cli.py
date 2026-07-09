@@ -158,6 +158,24 @@ def cmd_sentiment(cfg, con, src):
     print(render_sentiment(row))
 
 
+def cmd_market_breadth(cfg, con, src):
+    """抓取一次市场宽度快照: 上涨/下跌家数、涨跌停、市场温度。"""
+    from .ingest.market_state import ingest_market_breadth, latest_market_breadth
+    init_schema(con)
+    n = ingest_market_breadth(con)
+    row = latest_market_breadth(con)
+    if not row:
+        print("市场宽度: 暂无数据")
+        return
+    print(f"✅ 市场宽度已入库: {n} 行")
+    print(
+        f"{row['snap_time']} · {row['sentiment_desc']} · "
+        f"上涨/下跌 {row['up_count']}/{row['down_count']} · "
+        f"涨停/跌停 {row['limit_up']}/{row['limit_down']} · "
+        f"平均涨幅 {row['avg_rise']:.2f}%"
+    )
+
+
 def cmd_query(cfg, con, src):
     print("\n--- calendar (last 5 trading days) ---")
     print(con.execute(
@@ -522,6 +540,7 @@ CMDS = {
     "risk": cmd_risk,
     "rebalance": cmd_rebalance,
     "sentiment": cmd_sentiment,
+    "market-breadth": cmd_market_breadth,
     "alerts": cmd_alerts,
     "premarket": cmd_premarket,
     "endday": cmd_endday,
