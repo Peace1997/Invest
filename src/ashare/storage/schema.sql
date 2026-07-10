@@ -478,3 +478,96 @@ CREATE INDEX IF NOT EXISTS idx_stock_change_symbol_time
     ON stock_change_event(symbol, event_time);
 CREATE INDEX IF NOT EXISTS idx_stock_change_type_time
     ON stock_change_event(change_type, event_time);
+
+-- ============================================================================
+-- 龙虎榜 + 资金流向 (东财, 均 T+1 盘后公布). 用于交叉验证: 持仓/自选是否上榜、
+-- 被机构还是游资买、主力资金是否配合. 金额除注明外均为「元」.
+-- ============================================================================
+
+-- 龙虎榜每日明细 (stock_lhb_detail_em): 上榜个股 + 上榜原因 + 龙虎榜买卖.
+CREATE TABLE IF NOT EXISTS lhb_detail (
+    trade_date     DATE    NOT NULL,   -- 上榜日
+    symbol         VARCHAR NOT NULL,
+    name           VARCHAR,
+    close          DOUBLE,             -- 收盘价
+    pct_chg        DOUBLE,             -- 涨跌幅, %
+    net_buy        DOUBLE,             -- 龙虎榜净买额, 元
+    buy_amt        DOUBLE,             -- 龙虎榜买入额, 元
+    sell_amt       DOUBLE,             -- 龙虎榜卖出额, 元
+    lhb_amt        DOUBLE,             -- 龙虎榜成交额, 元
+    net_ratio      DOUBLE,             -- 净买额占市场总成交比, %
+    turnover_rate  DOUBLE,             -- 换手率, %
+    float_mv       DOUBLE,             -- 流通市值, 元
+    reason         VARCHAR,            -- 上榜原因
+    interpret      VARCHAR,            -- 解读 (如 "1家机构卖出，成功率31.51%")
+    PRIMARY KEY (trade_date, symbol, reason)
+);
+CREATE INDEX IF NOT EXISTS idx_lhb_detail_symbol ON lhb_detail(symbol, trade_date);
+
+-- 机构专用席位每日统计 (stock_lhb_jgmmtj_em): 主力机构参与的个股汇总.
+-- 注意: float_mv 本表单位为「亿元」(上游口径, 与 lhb_detail 不同).
+CREATE TABLE IF NOT EXISTS lhb_inst (
+    trade_date     DATE    NOT NULL,   -- 上榜日期
+    symbol         VARCHAR NOT NULL,
+    name           VARCHAR,
+    close          DOUBLE,
+    pct_chg        DOUBLE,
+    buy_org_n      INTEGER,            -- 买方机构数
+    sell_org_n     INTEGER,            -- 卖方机构数
+    org_buy_amt    DOUBLE,             -- 机构买入总额, 元
+    org_sell_amt   DOUBLE,             -- 机构卖出总额, 元
+    org_net_amt    DOUBLE,             -- 机构买入净额, 元
+    net_ratio      DOUBLE,             -- 机构净买额占总成交比, %
+    turnover_rate  DOUBLE,             -- 换手率, %
+    float_mv       DOUBLE,             -- 流通市值, 亿元
+    reason         VARCHAR,            -- 上榜原因
+    PRIMARY KEY (trade_date, symbol, reason)
+);
+CREATE INDEX IF NOT EXISTS idx_lhb_inst_symbol ON lhb_inst(symbol, trade_date);
+
+-- 每日活跃营业部 / 一线游资 (stock_lhb_hyyyb_em): 按营业部汇总当日买卖.
+CREATE TABLE IF NOT EXISTS lhb_yyb (
+    trade_date     DATE    NOT NULL,   -- 上榜日
+    yyb_code       VARCHAR NOT NULL,   -- 营业部代码
+    yyb_name       VARCHAR,            -- 营业部名称 (游资席位名)
+    buy_stock_n    INTEGER,            -- 买入个股数
+    sell_stock_n   INTEGER,            -- 卖出个股数
+    buy_amt        DOUBLE,             -- 买入总金额, 元
+    sell_amt       DOUBLE,             -- 卖出总金额, 元
+    net_amt        DOUBLE,             -- 总买卖净额, 元
+    buy_stocks     VARCHAR,            -- 当日买入股票(空格分隔)
+    PRIMARY KEY (trade_date, yyb_code)
+);
+CREATE INDEX IF NOT EXISTS idx_lhb_yyb_name ON lhb_yyb(yyb_name, trade_date);
+
+-- 个股主力资金流 (stock_individual_fund_flow, 按股逐日). 主力=超大单+大单(东财口径推断).
+CREATE TABLE IF NOT EXISTS stock_fund_flow (
+    symbol      VARCHAR NOT NULL,
+    trade_date  DATE    NOT NULL,
+    close       DOUBLE,
+    pct_chg     DOUBLE,             -- 涨跌幅, %
+    main_net    DOUBLE,             -- 主力净流入-净额, 元
+    main_ratio  DOUBLE,             -- 主力净流入-净占比, %
+    xl_net      DOUBLE,             -- 超大单净流入, 元
+    l_net       DOUBLE,             -- 大单净流入, 元
+    m_net       DOUBLE,             -- 中单净流入, 元
+    s_net       DOUBLE,             -- 小单净流入, 元
+    PRIMARY KEY (symbol, trade_date)
+);
+CREATE INDEX IF NOT EXISTS idx_stock_fund_flow_date ON stock_fund_flow(trade_date);
+
+-- 大盘资金流 (stock_market_fund_flow, 沪深整体, 逐日).
+CREATE TABLE IF NOT EXISTS market_fund_flow (
+    trade_date  DATE    NOT NULL,
+    sh_close    DOUBLE,             -- 上证收盘
+    sh_pct      DOUBLE,             -- 上证涨跌幅, %
+    sz_close    DOUBLE,             -- 深证收盘
+    sz_pct      DOUBLE,             -- 深证涨跌幅, %
+    main_net    DOUBLE,             -- 主力净流入-净额, 元
+    main_ratio  DOUBLE,             -- 主力净流入-净占比, %
+    xl_net      DOUBLE,             -- 超大单净流入, 元
+    l_net       DOUBLE,             -- 大单净流入, 元
+    m_net       DOUBLE,             -- 中单净流入, 元
+    s_net       DOUBLE,             -- 小单净流入, 元
+    PRIMARY KEY (trade_date)
+);

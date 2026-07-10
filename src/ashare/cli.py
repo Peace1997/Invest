@@ -100,6 +100,18 @@ def cmd_daily(cfg, con, src, args=None):
     except Exception as e:
         print(f"⚠ 舆情生成失败(不影响行情入库): {e}")
 
+    # 龙虎榜 + 资金流 (T+1 盘后, best-effort; 失败不影响行情入库)
+    try:
+        from .ingest.lhb import ingest_lhb
+        from .ingest.fundflow import ingest_market_fund_flow, ingest_stock_fund_flow
+        lres = ingest_lhb(con, src)
+        ingest_market_fund_flow(con, src)
+        syms = _stock_watch_symbols(cfg, con)
+        ingest_stock_fund_flow(con, src, syms)
+        print(f"✅ 龙虎榜/资金流: 明细{lres['detail']} 机构{lres['inst']} 游资{lres['yyb']}, 个股流{len(syms)}只")
+    except Exception as e:  # noqa: BLE001
+        print(f"⚠ 龙虎榜/资金流入库失败(不影响行情入库): {e}")
+
     if result.get("all_failed") or result.get("stale"):
         import sys
         sys.exit(2)   # 全失败 或 数据未追到最新交易日 → 非0退出, 供 cron/监控捕获
@@ -520,6 +532,54 @@ def cmd_today(cfg, con, src, args=None):
         print(f"\n📄 报告已保存: {out_path}")
 
 
+def _stock_watch_symbols(cfg, con) -> list[str]:
+    """龙虎榜/资金流交叉验证的个股集 = config sample_targets.stocks + minute.watchlist
+    + 持仓个股(positions.yaml)。仅个股(过滤 ETF/指数)。"""
+    syms = {str(c).zfill(6) for c in (cfg.get("sample_targets", {}).get("stocks") or [])}
+    syms |= {str(c).zfill(6) for c in ((cfg.get("minute", {}) or {}).get("watchlist") or [])}
+    try:
+        from .portfolio import load_positions
+        pf = load_positions()
+        if pf:
+            syms |= {h.code.zfill(6) for h in pf.holdings if h.type == "stock"}
+    except Exception:  # noqa: BLE001 - 无持仓文件不致命
+        pass
+    return sorted(_drop_nonstock(con, syms))
+
+
+def cmd_lhb(cfg, con, src, args=None):
+    """拉近一周龙虎榜(明细/机构席位/活跃游资)入库并打印主力机构+游资Top、自选命中。"""
+    from .ingest.lhb import ingest_lhb
+    from .signals.lhb_flow import section_lhb
+    init_schema(con)
+    res = ingest_lhb(con, src)
+    print(f"✅ 龙虎榜入库: 明细{res['detail']} · 机构{res['inst']} · 游资{res['yyb']} 行")
+    print(section_lhb(con, _stock_watch_symbols(cfg, con)))
+
+
+def cmd_fundflow(cfg, con, src, args=None):
+    """拉大盘资金流 + 持仓/自选个股主力资金流入库并打印。
+
+    单源失败降级(东财偶发断连/限流): 抓取失败仍从库中已有数据渲染, 不崩整条命令。
+    """
+    from .ingest.fundflow import ingest_market_fund_flow, ingest_stock_fund_flow
+    from .signals.lhb_flow import section_market_fund_flow, render_stock_flow_table
+    init_schema(con)
+    syms = _stock_watch_symbols(cfg, con)
+    n = m = 0
+    try:
+        n = ingest_market_fund_flow(con, src)
+    except Exception as e:  # noqa: BLE001 - 东财断连不阻断个股流与渲染
+        print(f"⚠ 大盘资金流抓取失败(用库中已有数据渲染): {e}")
+    try:
+        m = ingest_stock_fund_flow(con, src, syms)
+    except Exception as e:  # noqa: BLE001
+        print(f"⚠ 个股资金流抓取失败(用库中已有数据渲染): {e}")
+    print(f"✅ 资金流入库: 大盘{n}行 · 个股{m}行({len(syms)}只)")
+    print(section_market_fund_flow(con))
+    print(render_stock_flow_table(con, syms))
+
+
 CMDS = {
     "init": cmd_init,
     "sample": cmd_sample,
@@ -541,6 +601,8 @@ CMDS = {
     "rebalance": cmd_rebalance,
     "sentiment": cmd_sentiment,
     "market-breadth": cmd_market_breadth,
+    "lhb": cmd_lhb,
+    "fundflow": cmd_fundflow,
     "alerts": cmd_alerts,
     "premarket": cmd_premarket,
     "endday": cmd_endday,

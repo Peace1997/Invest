@@ -522,6 +522,106 @@ class AkSource(DataSource):
         df["trade_date"] = pd.to_datetime(df["trade_date"]).dt.date
         return df[["trade_date", "close"]].sort_values("trade_date")
 
+    # ---- 龙虎榜 (T+1 盘后) -----------------------------------------------
+    def lhb_detail(self, start: str, end: str) -> pd.DataFrame:
+        """龙虎榜每日明细. start/end='YYYYMMDD'. 一只票一天可多次上榜(不同原因)。
+        列: trade_date/symbol/name/close/pct_chg/net_buy/buy_amt/sell_amt/
+        lhb_amt/net_ratio/turnover_rate/float_mv/reason/interpret。"""
+        df = self._call(ak.stock_lhb_detail_em, start_date=start, end_date=end)
+        df = df.rename(columns={
+            "代码": "symbol", "名称": "name", "上榜日": "trade_date", "解读": "interpret",
+            "收盘价": "close", "涨跌幅": "pct_chg", "龙虎榜净买额": "net_buy",
+            "龙虎榜买入额": "buy_amt", "龙虎榜卖出额": "sell_amt", "龙虎榜成交额": "lhb_amt",
+            "净买额占总成交比": "net_ratio", "换手率": "turnover_rate",
+            "流通市值": "float_mv", "上榜原因": "reason"})
+        cols = ["trade_date", "symbol", "name", "close", "pct_chg", "net_buy",
+                "buy_amt", "sell_amt", "lhb_amt", "net_ratio", "turnover_rate",
+                "float_mv", "reason", "interpret"]
+        return self._finalize_lhb(df, cols)
+
+    def lhb_inst(self, start: str, end: str) -> pd.DataFrame:
+        """机构专用席位每日统计(主力机构). 列: trade_date/symbol/name/close/pct_chg/
+        buy_org_n/sell_org_n/org_buy_amt/org_sell_amt/org_net_amt/net_ratio/
+        turnover_rate/float_mv(亿元)/reason。"""
+        df = self._call(ak.stock_lhb_jgmmtj_em, start_date=start, end_date=end)
+        df = df.rename(columns={
+            "代码": "symbol", "名称": "name", "上榜日期": "trade_date", "收盘价": "close",
+            "涨跌幅": "pct_chg", "买方机构数": "buy_org_n", "卖方机构数": "sell_org_n",
+            "机构买入总额": "org_buy_amt", "机构卖出总额": "org_sell_amt",
+            "机构买入净额": "org_net_amt", "机构净买额占总成交额比": "net_ratio",
+            "换手率": "turnover_rate", "流通市值": "float_mv", "上榜原因": "reason"})
+        cols = ["trade_date", "symbol", "name", "close", "pct_chg", "buy_org_n",
+                "sell_org_n", "org_buy_amt", "org_sell_amt", "org_net_amt",
+                "net_ratio", "turnover_rate", "float_mv", "reason"]
+        return self._finalize_lhb(df, cols)
+
+    def lhb_active_seats(self, start: str, end: str) -> pd.DataFrame:
+        """每日活跃营业部(一线游资席位). 列: trade_date/yyb_code/yyb_name/
+        buy_stock_n/sell_stock_n/buy_amt/sell_amt/net_amt/buy_stocks。"""
+        df = self._call(ak.stock_lhb_hyyyb_em, start_date=start, end_date=end)
+        df = df.rename(columns={
+            "营业部名称": "yyb_name", "上榜日": "trade_date", "买入个股数": "buy_stock_n",
+            "卖出个股数": "sell_stock_n", "买入总金额": "buy_amt", "卖出总金额": "sell_amt",
+            "总买卖净额": "net_amt", "买入股票": "buy_stocks", "营业部代码": "yyb_code"})
+        cols = ["trade_date", "yyb_code", "yyb_name", "buy_stock_n", "sell_stock_n",
+                "buy_amt", "sell_amt", "net_amt", "buy_stocks"]
+        df = df.copy()
+        df["trade_date"] = pd.to_datetime(df["trade_date"]).dt.date
+        df["yyb_code"] = df["yyb_code"].astype(str)
+        for c in cols:
+            if c not in df.columns:
+                df[c] = pd.NA
+        return df[cols]
+
+    @staticmethod
+    def _finalize_lhb(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        df = df.copy()
+        df["symbol"] = df["symbol"].astype(str).str.zfill(6)
+        df["trade_date"] = pd.to_datetime(df["trade_date"]).dt.date
+        for c in cols:
+            if c not in df.columns:
+                df[c] = pd.NA
+        return df[cols]
+
+    # ---- 资金流向 (东财, T+1) --------------------------------------------
+    _FLOW_RENAME = {
+        "主力净流入-净额": "main_net", "主力净流入-净占比": "main_ratio",
+        "超大单净流入-净额": "xl_net", "大单净流入-净额": "l_net",
+        "中单净流入-净额": "m_net", "小单净流入-净额": "s_net",
+    }
+
+    def stock_fund_flow(self, symbol: str) -> pd.DataFrame:
+        """单只个股主力资金流历史(约120交易日). 主力=超大单+大单(东财分档推断)。
+        列: symbol/trade_date/close/pct_chg/main_net/main_ratio/xl_net/l_net/m_net/s_net。"""
+        s = str(symbol).zfill(6)
+        market = {"SH": "sh", "SZ": "sz", "BJ": "bj"}.get(_exchange_of(s), "sz")
+        df = self._call(ak.stock_individual_fund_flow, stock=s, market=market)
+        df = df.rename(columns={"日期": "trade_date", "收盘价": "close",
+                                "涨跌幅": "pct_chg", **self._FLOW_RENAME})
+        df["symbol"] = s
+        df["trade_date"] = pd.to_datetime(df["trade_date"]).dt.date
+        cols = ["symbol", "trade_date", "close", "pct_chg", "main_net",
+                "main_ratio", "xl_net", "l_net", "m_net", "s_net"]
+        for c in cols:
+            if c not in df.columns:
+                df[c] = pd.NA
+        return df[cols]
+
+    def market_fund_flow(self) -> pd.DataFrame:
+        """沪深大盘资金流历史. 列: trade_date/sh_close/sh_pct/sz_close/sz_pct/
+        main_net/main_ratio/xl_net/l_net/m_net/s_net。"""
+        df = self._call(ak.stock_market_fund_flow)
+        df = df.rename(columns={
+            "日期": "trade_date", "上证-收盘价": "sh_close", "上证-涨跌幅": "sh_pct",
+            "深证-收盘价": "sz_close", "深证-涨跌幅": "sz_pct", **self._FLOW_RENAME})
+        df["trade_date"] = pd.to_datetime(df["trade_date"]).dt.date
+        cols = ["trade_date", "sh_close", "sh_pct", "sz_close", "sz_pct",
+                "main_net", "main_ratio", "xl_net", "l_net", "m_net", "s_net"]
+        for c in cols:
+            if c not in df.columns:
+                df[c] = pd.NA
+        return df[cols]
+
     # ---- northbound ------------------------------------------------------
     def northbound_hist(self, channel: str = "北向资金") -> pd.DataFrame:
         df = self._call(ak.stock_hsgt_hist_em, symbol=channel)

@@ -319,13 +319,17 @@ def section_coverage(con: duckdb.DuckDBPyConnection) -> str:
     return "\n".join(lines)
 
 
-def section_my_portfolio() -> str | None:
-    """My real holdings (positions.yaml), valued live. None if no positions file."""
+def section_my_portfolio(con: duckdb.DuckDBPyConnection | None = None) -> str | None:
+    """My real holdings (positions.yaml), valued live. None if no positions file.
+
+    传入 con 时, 场外基金净值优先从 fund_nav 仓库读(T-1), 避免实时东财抓取——
+    后者在部分环境会触发 py_mini_racer 的 V8 退出 abort, 拖垮整份报告渲染。
+    """
     from ..portfolio import load_positions, value_portfolio
     pf = load_positions()
     if pf is None or not pf.holdings:
         return None
-    pf = value_portfolio(pf)
+    pf = value_portfolio(pf, con=con)
 
     lines = [_section_header("我的持仓 · 实时估值(腾讯, 盘中未定稿)")]
 
@@ -407,7 +411,23 @@ def render_daily_report(con: duckdb.DuckDBPyConnection,
         section_northbound(con),
         section_market_breadth(con, watchlist=watchlist),
     ]
-    portfolio = section_my_portfolio()
+
+    # 龙虎榜 + 资金流 (主力机构/一线游资/主力资金). 表未建/无数据时静默跳过。
+    try:
+        from ..signals.lhb_flow import section_market_fund_flow, section_lhb
+        flow_syms = list(watchlist or [])
+        try:
+            from ..portfolio import load_positions
+            pf = load_positions()
+            if pf:
+                flow_syms += [h.code for h in pf.holdings if h.type == "stock"]
+        except Exception:  # noqa: BLE001
+            pass
+        sections.append(section_market_fund_flow(con))
+        sections.append(section_lhb(con, flow_syms))
+    except Exception:  # noqa: BLE001 - 报告永不因新板块失败而中断
+        pass
+    portfolio = section_my_portfolio(con)
     if portfolio:
         sections.append(portfolio)
     sections += [

@@ -1095,6 +1095,99 @@ def _render_ai_input_sample(news: pd.DataFrame):
         )
 
 
+def _capital_watch_symbols() -> list[str]:
+    """龙虎榜/资金流交叉验证的个股集 = config sample_targets.stocks + minute.watchlist
+    + 持仓个股 (与 CLI._stock_watch_symbols 口径一致)。"""
+    cfg = get_cfg()
+    syms = {str(c).zfill(6) for c in (cfg.get("sample_targets", {}).get("stocks") or [])}
+    syms |= {str(c).zfill(6) for c in ((cfg.get("minute", {}) or {}).get("watchlist") or [])}
+    try:
+        pf_local = load_positions()
+        if pf_local:
+            syms |= {h.code.zfill(6) for h in pf_local.holdings if h.type == "stock"}
+    except Exception:  # noqa: BLE001
+        pass
+    return sorted(syms)
+
+
+def _capital_flow_panel():
+    """龙虎榜 + 资金流向面板 (主力机构 / 一线游资 / 大盘主力资金). 均 T+1 盘后。"""
+    from ashare.ingest.fundflow import (market_fund_flow_hist, ingest_market_fund_flow,
+                                         ingest_stock_fund_flow)
+    from ashare.ingest.lhb import (load_inst_recent, load_active_seats,
+                                   load_lhb_for_symbols, latest_lhb_date, ingest_lhb)
+    con = get_con()
+    with st.expander("🐉 龙虎榜 · 资金流向 (主力机构 / 一线游资 · T+1 盘后)", expanded=False):
+        if st.button("刷新龙虎榜/资金流", key="refresh_lhb", use_container_width=False):
+            with st.spinner("拉取龙虎榜与资金流(约十几秒)…"):
+                try:
+                    ak = get_ak()
+                    ingest_lhb(con, ak)
+                    ingest_market_fund_flow(con, ak)
+                    ingest_stock_fund_flow(con, ak, _capital_watch_symbols())
+                    st.success("已更新")
+                    _reset_db_connection()
+                    st.rerun()
+                except Exception as e:  # noqa: BLE001
+                    st.warning(f"刷新失败: {e}")
+
+        mff = market_fund_flow_hist(con, 5)
+        if mff.empty and latest_lhb_date(con) is None:
+            st.info("暂无龙虎榜/资金流数据 — 点上方「刷新」，或命令行跑 `ashare lhb` / `ashare fundflow`。")
+            return
+        if not mff.empty:
+            latest = mff.iloc[0]
+            cols = st.columns(3)
+            cols[0].metric("大盘主力净流入(当日)", f"{latest['main_net']/1e8:.1f} 亿",
+                           f"{latest['main_ratio']:+.2f}%")
+            cols[1].metric("近5日主力累计", f"{mff['main_net'].sum()/1e8:.1f} 亿")
+            cols[2].metric("沪 / 深", f"{latest['sh_pct']:+.2f}% / {latest['sz_pct']:+.2f}%")
+            st.caption(f"数据截至 {str(latest['trade_date'])[:10]} · 主力=超大单+大单(东财按单笔金额分档推断)")
+
+        # 自选/持仓上榜 (最重要)
+        hit = load_lhb_for_symbols(con, _capital_watch_symbols(), days=10)
+        if not hit.empty:
+            st.markdown("**⭐ 自选/持仓上龙虎榜 (近10日)**")
+            show = hit.copy()
+            show["龙虎净买(亿)"] = (show["net_buy"] / 1e8).round(2)
+            show["机构净买(亿)"] = (show["org_net_amt"] / 1e8).round(2)
+            st.dataframe(
+                show[["trade_date", "symbol", "name", "pct_chg", "龙虎净买(亿)",
+                      "机构净买(亿)", "reason"]].rename(columns={
+                          "trade_date": "日期", "symbol": "代码", "name": "名称",
+                          "pct_chg": "涨跌%", "reason": "上榜原因"}),
+                use_container_width=True, hide_index=True)
+
+        c1, c2 = st.columns(2)
+        inst = load_inst_recent(con, 8)
+        with c1:
+            st.markdown("**主力机构净买 Top**")
+            if inst.empty:
+                st.caption("—")
+            else:
+                t = inst.copy()
+                t["机构净买(亿)"] = (t["org_net_amt"] / 1e8).round(2)
+                st.dataframe(
+                    t[["symbol", "name", "pct_chg", "机构净买(亿)", "buy_org_n"]].rename(
+                        columns={"symbol": "代码", "name": "名称", "pct_chg": "涨跌%",
+                                 "buy_org_n": "买方机构数"}),
+                    use_container_width=True, hide_index=True)
+        seats = load_active_seats(con, 8)
+        with c2:
+            st.markdown("**活跃游资营业部 Top**")
+            if seats.empty:
+                st.caption("—")
+            else:
+                t = seats.copy()
+                t["净买(亿)"] = (t["net_amt"] / 1e8).round(2)
+                t["营业部"] = t["yyb_name"].str.replace("证券股份有限公司", "", regex=False)
+                st.dataframe(
+                    t[["营业部", "净买(亿)", "buy_stock_n"]].rename(
+                        columns={"buy_stock_n": "买入只数"}),
+                    use_container_width=True, hide_index=True)
+        st.caption("龙虎榜/机构/游资均为交易所 T+1 盘后公布，用于验证'谁在买'，非实时。")
+
+
 def page_sentiment():
     head = st.columns([0.48, 0.16, 0.17, 0.19])
     head[0].subheader("舆情分析 · News & Sentiment Monitor")
@@ -1166,6 +1259,9 @@ def page_sentiment():
     _render_local_news_panel(today_news)
 
     _live_news_monitor()
+
+    st.divider()
+    _capital_flow_panel()
 
     st.divider()
     st.markdown("##### AI 市场舆情详情")
