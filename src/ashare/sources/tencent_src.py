@@ -37,7 +37,7 @@ def _qt_prefix(symbol: str, is_index: bool = False) -> str:
     """
     s = str(symbol).zfill(6)
     if is_index:
-        prefix = "sz" if s.startswith("399") else "sh"
+        prefix = "sz" if s.startswith("399") else "bj" if s.startswith("899") else "sh"
         return prefix + s
     ex = _exchange_of(s)
     return {"SH": "sh", "SZ": "sz", "BJ": "bj"}.get(ex, "sh") + s

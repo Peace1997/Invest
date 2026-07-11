@@ -38,7 +38,12 @@ from ashare.ingest.news import ingest_news
 from ashare.ingest.market_state import ingest_market_breadth, latest_market_breadth
 from ashare.signals.sentiment import generate_sentiment, latest_sentiment, sentiment_history
 
-st.set_page_config(page_title="Financial Analysis", page_icon="📈", layout="wide")
+st.set_page_config(
+    page_title="Invest · 市场情报",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
 
 UP, DN = "#e23b3b", "#1aae5c"   # A股惯例: 红涨绿跌
 
@@ -69,6 +74,66 @@ THEME_KEYWORDS = {
     "红利/央企": ("红利", "央企", "国企", "中特估", "分红"),
     "黄金/商品": ("黄金", "原油", "铜", "商品", "大宗"),
 }
+
+
+def _apply_dashboard_style():
+    """Keep the Streamlit surface compact and scan-friendly on desktop/mobile."""
+    st.markdown(
+        """
+        <style>
+        .stMainBlockContainer {
+            max-width: 1480px;
+            padding-top: 1.35rem;
+            padding-bottom: 3rem;
+        }
+        [data-testid="stHeader"] { background: transparent; }
+        [data-testid="stSidebar"] {
+            border-right: 1px solid color-mix(in srgb, var(--text-color) 12%, transparent);
+        }
+        h1, h2, h3, h4, h5, h6, p, button, input, label {
+            letter-spacing: 0 !important;
+        }
+        h1 { font-size: 1.85rem !important; line-height: 1.2 !important; }
+        h2 { font-size: 1.35rem !important; }
+        h3 { font-size: 1.05rem !important; }
+        [data-testid="stMetric"] {
+            min-height: 6.9rem;
+            padding: 0.8rem 0.9rem;
+            border: 1px solid color-mix(in srgb, var(--text-color) 12%, transparent);
+            border-radius: 6px;
+            background: color-mix(in srgb, var(--secondary-background-color) 72%, transparent);
+        }
+        [data-testid="stMetricLabel"] p {
+            font-size: 0.78rem !important;
+            color: color-mix(in srgb, var(--text-color) 68%, transparent);
+        }
+        [data-testid="stMetricValue"] {
+            font-size: 1.35rem !important;
+            line-height: 1.25 !important;
+        }
+        [data-testid="stMetricDelta"] { font-size: 0.76rem !important; }
+        [data-testid="stVerticalBlockBorderWrapper"] {
+            border-radius: 6px !important;
+        }
+        .stButton > button, [data-testid="stBaseButton-secondary"],
+        [data-testid="stBaseButton-primary"] {
+            min-height: 2.35rem;
+            border-radius: 6px !important;
+        }
+        [data-baseweb="tab-list"] { gap: 0.35rem; }
+        [data-baseweb="tab"] { border-radius: 4px !important; }
+        [data-testid="stDataFrame"] { font-size: 0.84rem; }
+        hr { margin: 1.25rem 0 !important; }
+        @media (max-width: 760px) {
+            .stMainBlockContainer { padding: 0.8rem 0.7rem 2rem; }
+            h1 { font-size: 1.5rem !important; }
+            [data-testid="stMetric"] { min-height: 5.9rem; padding: 0.65rem 0.7rem; }
+            [data-testid="stMetricValue"] { font-size: 1.12rem !important; }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # ── shared resources (one instance, reused across reruns) ──
@@ -710,7 +775,7 @@ def render_breakdown(sig):
         st.caption("无打分明细。")
         return
     left, right = st.columns([1, 1])
-    left.plotly_chart(score_waterfall(sig), use_container_width=True)
+    left.plotly_chart(score_waterfall(sig), width="stretch")
     rows = [{"因子": c.label, "贡献": round(c.contribution, 3),
              "影响上限": c.cap, "依据(实际数值→解读)": c.detail}
             for c in sig.components]
@@ -718,14 +783,21 @@ def render_breakdown(sig):
     right.markdown(f"**综合健康分 = {sig.score:+.2f}** ({sig.label}) · "
                    f"置信度 {sig.confidence:.0%}（样本 {sig.metadata.get('n_obs','?')} 日）")
     right.dataframe(df.style.map(_color, subset=["贡献"]),
-                    use_container_width=True, hide_index=True)
+                    width="stretch", hide_index=True)
     right.caption("正贡献=偏多动力, 负贡献=偏空动力；各因子相加(裁剪到±1)即综合分。")
 
 
 def _color(v):
-    if v is None:
+    if v is None or pd.isna(v):
         return "color:#888"
     return f"color:{UP}" if v > 0 else f"color:{DN}" if v < 0 else "color:#888"
+
+
+def _safe_float(v, default: float = 0.0) -> float:
+    try:
+        return default if v is None or pd.isna(v) else float(v)
+    except (TypeError, ValueError):
+        return default
 
 
 def _pct_text(v) -> str:
@@ -772,7 +844,7 @@ def render_index_fund_cards(funds, desc: str):
 
                 st.metric("现价/净值", price_txt, _pct_text(pct))
                 spark = get_fund_sparkline(s.target)
-                st.plotly_chart(_sparkline_fig(spark, tone), use_container_width=True,
+                st.plotly_chart(_sparkline_fig(spark, tone), width="stretch",
                                 config={"displayModeBar": False})
 
                 k = st.columns(3)
@@ -786,8 +858,7 @@ def render_index_fund_cards(funds, desc: str):
 
 
 # ════════════════════════════ layout ════════════════════════════
-st.sidebar.title("Financial Analysis")
-st.sidebar.caption("当前仅开放: 舆情分析")
+_apply_dashboard_style()
 
 pf, health, advice, timing, history = None, {}, [], None, pd.DataFrame()
 adv_by_code, label_to_holding = {}, {}
@@ -835,7 +906,7 @@ def page_overview():
                            textinfo="label+percent"))
     pie.update_layout(title="资产配置", height=340, margin=dict(t=40, b=10, l=10, r=10),
                       showlegend=False)
-    cc[0].plotly_chart(pie, use_container_width=True)
+    cc[0].plotly_chart(pie, width="stretch")
 
     # equity curve
     if history is not None and len(history) >= 2:
@@ -846,7 +917,7 @@ def page_overview():
         mdd, pk, tr = max_drawdown(mv)
         eq.update_layout(title=f"总资产曲线 (最大回撤 {mdd:.2f}%)", height=340,
                          margin=dict(t=40, b=10, l=10, r=10))
-        cc[1].plotly_chart(eq, use_container_width=True)
+        cc[1].plotly_chart(eq, width="stretch")
     else:
         cc[1].info("收益曲线需 ≥2 天快照。每天跑一次 `pf` 或开着看板即可积累。")
 
@@ -867,7 +938,7 @@ def page_overview():
     df = pd.DataFrame(rows)
     st.dataframe(
         df.style.map(_color, subset=["今日%", "浮盈%", "健康分"]),
-        use_container_width=True, hide_index=True)
+        width="stretch", hide_index=True)
 
 
 def page_advice():
@@ -911,7 +982,7 @@ def page_risk():
                           title="权重 vs 风险贡献 vs 等风险目标 (谁在吃掉你的波动)",
                           margin=dict(t=40, b=10, l=10, r=10),
                           legend=dict(orientation="h", y=1.02))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     c1, c2 = st.columns(2)
     c1.code(render_risk(rep), language=None)
@@ -976,6 +1047,404 @@ def _market_news_alignment(sent: dict | None, market: dict | None) -> str | None
     if score < -0.1 and ratio <= 1:
         return "AI 偏空，市场宽度配合"
     return "AI 中性，观察市场宽度变化"
+
+
+INDEX_NAMES = {
+    "000001": "上证指数",
+    "399001": "深证成指",
+    "399006": "创业板指",
+    "000300": "沪深300",
+    "000905": "中证500",
+    "000852": "中证1000",
+    "000688": "科创50",
+    "899050": "北证50",
+}
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _live_major_indices(codes: tuple[str, ...]) -> pd.DataFrame:
+    """Live index quotes are provisional and never written into settled bars."""
+    if not codes:
+        return pd.DataFrame()
+    try:
+        from ashare.sources import TencentSource
+
+        return TencentSource().spot(list(codes), index_symbols=set(codes))
+    except Exception:  # noqa: BLE001 - local close data remains available
+        return pd.DataFrame()
+
+
+def _latest_index_snapshot(con) -> pd.DataFrame:
+    """Prefer live major-index quotes, filling gaps with local settled closes."""
+    try:
+        local = con.execute(
+            """SELECT symbol, trade_date, close, pct_chg
+               FROM (
+                   SELECT symbol, trade_date, close, pct_chg,
+                          row_number() OVER (PARTITION BY symbol ORDER BY trade_date DESC) AS rn
+                   FROM index_bar
+               ) WHERE rn=1"""
+        ).df()
+    except Exception:  # noqa: BLE001 - optional dashboard module
+        local = pd.DataFrame()
+
+    live = _live_major_indices(tuple(INDEX_NAMES))
+    frames = []
+    live_symbols: set[str] = set()
+    if live is not None and not live.empty:
+        live = live.copy()
+        live["symbol"] = live["symbol"].astype(str).str.zfill(6)
+        live = live[live["symbol"].isin(INDEX_NAMES)]
+        live = live[live["price"].notna()]
+        if not live.empty:
+            live_symbols = set(live["symbol"])
+            live["close"] = live["price"]
+            live["data_time"] = live["quote_time"]
+            live["data_kind"] = "实时"
+            frames.append(live[["symbol", "name", "close", "pct_chg", "data_time", "data_kind"]])
+
+    if local is not None and not local.empty:
+        local = local.copy()
+        local["symbol"] = local["symbol"].astype(str).str.zfill(6)
+        local = local[~local["symbol"].isin(live_symbols)]
+        local["name"] = local["symbol"].map(INDEX_NAMES).fillna(local["symbol"])
+        local["data_time"] = local["trade_date"]
+        local["data_kind"] = "收盘"
+        frames.append(local[["symbol", "name", "close", "pct_chg", "data_time", "data_kind"]])
+    if not frames:
+        return pd.DataFrame()
+
+    df = pd.concat(frames, ignore_index=True)
+    df["name"] = df["name"].fillna(df["symbol"].map(INDEX_NAMES)).fillna(df["symbol"])
+    order = {code: i for i, code in enumerate(INDEX_NAMES)}
+    df["_order"] = df["symbol"].map(order).fillna(len(order))
+    return df.sort_values(["_order", "symbol"]).drop(columns="_order")
+
+
+def _market_breadth_history(con, limit: int = 240) -> pd.DataFrame:
+    try:
+        df = con.execute(
+            """SELECT snap_time, up_count, down_count, avg_rise, up_ratio,
+                      limit_up, limit_down, sentiment_desc
+               FROM market_breadth_snapshot
+               ORDER BY snap_time DESC LIMIT ?""",
+            [int(limit)],
+        ).df()
+    except Exception:  # noqa: BLE001 - optional dashboard module
+        return pd.DataFrame()
+    if df.empty:
+        return df
+    df["snap_time"] = pd.to_datetime(df["snap_time"], errors="coerce")
+    return df.dropna(subset=["snap_time"]).drop_duplicates("snap_time").sort_values("snap_time")
+
+
+def _render_breadth_trend(con):
+    hist = _market_breadth_history(con)
+    st.markdown("#### 市场宽度")
+    if len(hist) < 2:
+        st.info("市场宽度历史不足，刷新后将逐步形成盘中趋势。")
+        return
+
+    fig = make_subplots(
+        rows=1,
+        cols=2,
+        column_widths=[0.58, 0.42],
+        horizontal_spacing=0.12,
+        subplot_titles=("上涨家数占比", "涨跌停结构"),
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=hist["snap_time"],
+            y=pd.to_numeric(hist["up_ratio"], errors="coerce"),
+            mode="lines",
+            line=dict(color="#d84a4a", width=2),
+            fill="tozeroy",
+            fillcolor="rgba(216,74,74,0.10)",
+            hovertemplate="%{x|%m-%d %H:%M}<br>上涨占比 %{y:.1f}%<extra></extra>",
+            name="上涨占比",
+        ),
+        row=1,
+        col=1,
+    )
+    fig.add_hline(y=50, line_dash="dot", line_color="#8a94a3", row=1, col=1)
+    fig.add_trace(
+        go.Bar(
+            x=hist["snap_time"],
+            y=pd.to_numeric(hist["limit_up"], errors="coerce").fillna(0),
+            marker_color=UP,
+            hovertemplate="%{x|%m-%d %H:%M}<br>涨停 %{y:.0f}<extra></extra>",
+            name="涨停",
+        ),
+        row=1,
+        col=2,
+    )
+    fig.add_trace(
+        go.Bar(
+            x=hist["snap_time"],
+            y=-pd.to_numeric(hist["limit_down"], errors="coerce").fillna(0),
+            marker_color=DN,
+            hovertemplate="%{x|%m-%d %H:%M}<br>跌停 %{customdata:.0f}<extra></extra>",
+            customdata=pd.to_numeric(hist["limit_down"], errors="coerce").fillna(0),
+            name="跌停",
+        ),
+        row=1,
+        col=2,
+    )
+    fig.update_yaxes(range=[0, 100], ticksuffix="%", row=1, col=1)
+    fig.update_layout(
+        height=300,
+        margin=dict(t=42, b=10, l=10, r=10),
+        barmode="relative",
+        showlegend=False,
+        hovermode="x unified",
+    )
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+
+
+def _render_major_indices(con):
+    st.markdown("#### 主要指数")
+    df = _latest_index_snapshot(con)
+    if df.empty:
+        st.info("本地指数行情暂无数据。")
+        return
+    show = df.rename(columns={
+        "name": "指数", "symbol": "代码", "close": "收盘", "pct_chg": "涨跌%",
+        "data_time": "时间", "data_kind": "口径",
+    })[["指数", "代码", "收盘", "涨跌%", "口径", "时间"]]
+    times = pd.to_datetime(show["时间"], errors="coerce")
+    show["时间"] = [
+        "—" if pd.isna(ts) else ts.strftime("%m-%d" if ts.hour == ts.minute == 0 else "%m-%d %H:%M")
+        for ts in times
+    ]
+    st.dataframe(
+        show.style.map(_color, subset=["涨跌%"]).format({"收盘": "{:.2f}", "涨跌%": "{:+.2f}"}),
+        width="stretch",
+        hide_index=True,
+        height=min(315, 36 + 35 * len(show)),
+    )
+    st.caption("指数优先使用腾讯 60 秒实时快照，缺失项回退本地收盘；盘中宽度来自市场快照。")
+
+
+def _topic_rows(news: pd.DataFrame) -> pd.DataFrame:
+    stats = _local_news_stats(news)
+    rows = []
+    for theme, count in stats["top_themes"]:
+        score = sum(
+            int(item["local_score"])
+            for item in stats["enriched"]
+            if theme in item["themes"]
+        )
+        rows.append({"主题": theme, "新闻数": count, "倾向分": score})
+    return pd.DataFrame(rows)
+
+
+def _render_hot_topics(news: pd.DataFrame):
+    st.markdown("#### 热点主题")
+    topics = _topic_rows(news)
+    if topics.empty:
+        st.info("当前新闻尚未命中主题词。")
+        return
+    topics = topics.sort_values(["新闻数", "倾向分"], ascending=[True, True]).tail(8)
+    colors = [UP if value > 0 else DN if value < 0 else "#8a94a3" for value in topics["倾向分"]]
+    fig = go.Figure(go.Bar(
+        x=topics["新闻数"],
+        y=topics["主题"],
+        orientation="h",
+        marker_color=colors,
+        text=topics["新闻数"],
+        textposition="outside",
+        customdata=topics["倾向分"],
+        hovertemplate="%{y}<br>新闻 %{x} 条<br>本地倾向分 %{customdata:+.0f}<extra></extra>",
+    ))
+    fig.update_layout(
+        height=max(230, 38 * len(topics)),
+        margin=dict(t=10, b=10, l=10, r=28),
+        xaxis=dict(showgrid=False, showticklabels=False, zeroline=False),
+        yaxis=dict(title=None),
+    )
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+    st.caption("红/绿分别表示本地关键词偏多/偏空；灰色为中性，仅用于新闻聚类。")
+
+
+def _render_sentiment_trend(con):
+    st.markdown("#### 情绪走势")
+    hist = sentiment_history(con, days=30).sort_values("as_of_date")
+    if len(hist) < 2:
+        st.info("舆情历史不足，至少需要两个有数据的交易日。")
+        return
+    colors = [UP if s > 0.1 else DN if s < -0.1 else "#8a94a3" for s in hist["score"]]
+    fig = go.Figure(go.Scatter(
+        x=hist["as_of_date"].astype(str),
+        y=hist["score"],
+        mode="lines+markers",
+        line=dict(color="#3973ac", width=2),
+        marker=dict(color=colors, size=8),
+        hovertemplate="%{x}<br>情绪分 %{y:+.2f}<extra></extra>",
+    ))
+    fig.add_hline(y=0, line_dash="dot", line_color="#8a94a3")
+    fig.update_layout(
+        height=280,
+        margin=dict(t=10, b=10, l=10, r=10),
+        yaxis=dict(range=[-1, 1], title=None),
+        xaxis=dict(title=None),
+    )
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+    st.caption("AI 生成，-1 为偏空、0 为中性、+1 为偏多。")
+
+
+def _render_sentiment_brief(sent: dict | None, market: dict | None):
+    st.markdown("#### 舆情判断")
+    if not sent:
+        st.info("当前没有可用的 AI 舆情总结；本地规则与市场宽度仍可独立使用。")
+        return
+    alignment = _market_news_alignment(sent, market)
+    st.markdown(f"**{sent['summary']}**")
+    if alignment:
+        st.caption(f"市场校验: {alignment}")
+    opportunity, risk = st.columns(2)
+    with opportunity:
+        st.markdown("**正面主题**")
+        values = [x for x in str(sent.get("bullish") or "").split("；") if x]
+        st.caption(" · ".join(values) if values else "—")
+    with risk:
+        st.markdown("**风险主题**")
+        values = [x for x in str(sent.get("bearish") or "").split("；") if x]
+        st.caption(" · ".join(values) if values else "—")
+    created = sent.get("created_at")
+    created_txt = (
+        pd.Timestamp(created).strftime("%Y-%m-%d %H:%M")
+        if created is not None and pd.notna(created) else "n/a"
+    )
+    st.caption(
+        f"{sent.get('model', '')} · {int(sent.get('n_news') or 0)} 条新闻 · "
+        f"生成于 {created_txt} · AI 生成，非投资建议"
+    )
+
+
+def _render_market_overview(news: pd.DataFrame, sent: dict | None, market: dict | None):
+    from ashare.ingest.fundflow import market_fund_flow_hist
+
+    con = get_con()
+    mff = market_fund_flow_hist(con, 20)
+    flow = mff.iloc[0] if not mff.empty else None
+    metrics = st.columns(5, gap="small")
+    if market:
+        metrics[0].metric(
+            "市场温度",
+            market.get("sentiment_desc") or "—",
+            f"均涨 {_safe_float(market.get('avg_rise')):+.2f}%",
+            delta_color="off",
+        )
+        metrics[1].metric(
+            "上涨 / 下跌",
+            f"{int(_safe_float(market.get('up_count')))} / {int(_safe_float(market.get('down_count')))}",
+            f"上涨占比 {_safe_float(market.get('up_ratio')):.1f}%",
+            delta_color="off",
+        )
+        metrics[2].metric(
+            "涨停 / 跌停",
+            f"{int(_safe_float(market.get('limit_up')))} / {int(_safe_float(market.get('limit_down')))}",
+            "盘中宽度",
+            delta_color="off",
+        )
+    else:
+        for col, label in zip(metrics[:3], ["市场温度", "上涨 / 下跌", "涨停 / 跌停"]):
+            col.metric(label, "未采集")
+    if sent:
+        metrics[3].metric(
+            "AI 舆情",
+            str(sent.get("label") or "—"),
+            f"情绪分 {_safe_float(sent.get('score')):+.2f}",
+            delta_color="off",
+        )
+    else:
+        metrics[3].metric("AI 舆情", "暂无")
+    if flow is not None:
+        metrics[4].metric(
+            "主力净流入",
+            f"{_safe_float(flow.get('main_net')) / 1e8:+.1f} 亿",
+            f"{_safe_float(flow.get('main_ratio')):+.2f}%",
+            delta_color="off",
+        )
+    else:
+        metrics[4].metric("主力净流入", "暂无")
+
+    freshness = []
+    if market and market.get("snap_time") is not None:
+        freshness.append(f"市场快照 {pd.Timestamp(market['snap_time']):%m-%d %H:%M}")
+    if flow is not None:
+        freshness.append(f"资金数据 {str(flow['trade_date'])[:10]}")
+    if freshness:
+        st.caption(" · ".join(freshness))
+
+    left, right = st.columns([0.62, 0.38], gap="large")
+    with left:
+        _render_breadth_trend(con)
+    with right:
+        _render_major_indices(con)
+
+    st.divider()
+    left, right = st.columns([0.5, 0.5], gap="large")
+    with left:
+        _render_sentiment_brief(sent, market)
+        _render_sentiment_trend(con)
+    with right:
+        _render_hot_topics(news)
+
+
+def _render_attention_queues(news: pd.DataFrame):
+    stats = _local_news_stats(news)
+    high, holding = st.columns(2, gap="large")
+    with high:
+        st.markdown("#### 风险队列")
+        if not stats["high"]:
+            st.caption("当前没有中高风险新闻。")
+        for item in stats["high"][:8]:
+            severity = "高" if item["risk_level"] >= 3 else "中"
+            st.markdown(f"- **{severity}** · {_format_news_title(item['row'])}")
+            st.caption("触发: " + "；".join(item["risk_reasons"]))
+    with holding:
+        st.markdown("#### 持仓命中")
+        if not stats["holding"]:
+            st.caption("当前新闻没有命中持仓关键词。")
+        for item in stats["holding"][:8]:
+            labels = [f"{h['name']}({h['code']})" for h in item["holding_hits"]]
+            st.markdown(f"- {_format_news_title(item['row'])}")
+            st.caption("关联: " + "、".join(labels))
+
+
+def _render_data_inventory(con):
+    specs = [
+        ("市场宽度", "market_breadth_snapshot", "snap_time"),
+        ("A股指数", "index_bar", "trade_date"),
+        ("市场资金", "market_fund_flow", "trade_date"),
+        ("龙虎榜", "lhb_detail", "trade_date"),
+        ("原始新闻", "news_raw", "news_date"),
+        ("AI舆情", "sentiment_daily", "as_of_date"),
+        ("全球指数", "global_index_snapshot", "snap_time"),
+        ("板块资金", "sector_fund_flow_snapshot", "snap_time"),
+        ("个股异动", "stock_change_event", "event_time"),
+    ]
+    rows = []
+    for label, table, time_col in specs:
+        try:
+            count, latest = con.execute(
+                f"SELECT count(*), max({time_col}) FROM {table}"
+            ).fetchone()
+        except Exception:  # noqa: BLE001 - schema may be older than the UI
+            count, latest = 0, None
+        rows.append({
+            "数据集": label,
+            "记录数": int(count or 0),
+            "最近数据": "—" if latest is None else str(latest)[:19],
+            "状态": "可用" if count else "待采集",
+        })
+    st.dataframe(
+        pd.DataFrame(rows),
+        width="stretch",
+        hide_index=True,
+        column_config={"记录数": st.column_config.NumberColumn(format="localized")},
+    )
 
 
 def _render_sentiment_overview(news: pd.DataFrame, sent: dict | None, market: dict | None = None):
@@ -1090,12 +1559,12 @@ def _render_ai_input_sample(news: pd.DataFrame):
             sample[["source", "title", "ts"]].assign(
                 ts=lambda d: pd.to_datetime(d["ts"], errors="coerce").dt.strftime("%Y-%m-%d %H:%M")
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
 
-def _capital_watch_symbols() -> list[str]:
+def _capital_watch_symbols(con=None) -> list[str]:
     """龙虎榜/资金流交叉验证的个股集 = config sample_targets.stocks + minute.watchlist
     + 持仓个股 (与 CLI._stock_watch_symbols 口径一致)。"""
     cfg = get_cfg()
@@ -1107,97 +1576,243 @@ def _capital_watch_symbols() -> list[str]:
             syms |= {h.code.zfill(6) for h in pf_local.holdings if h.type == "stock"}
     except Exception:  # noqa: BLE001
         pass
+    if con is not None and syms:
+        try:
+            placeholders = ",".join(["?"] * len(syms))
+            nonstock = {
+                str(row[0]).zfill(6)
+                for row in con.execute(
+                    f"SELECT symbol FROM instruments WHERE symbol IN ({placeholders}) AND type<>'stock'",
+                    sorted(syms),
+                ).fetchall()
+            }
+            syms -= nonstock
+        except Exception:  # noqa: BLE001 - unknown symbols remain eligible
+            pass
     return sorted(syms)
 
 
 def _capital_flow_panel():
-    """龙虎榜 + 资金流向面板 (主力机构 / 一线游资 / 大盘主力资金). 均 T+1 盘后。"""
-    from ashare.ingest.fundflow import (market_fund_flow_hist, ingest_market_fund_flow,
-                                         ingest_stock_fund_flow)
-    from ashare.ingest.lhb import (load_inst_recent, load_active_seats,
-                                   load_lhb_for_symbols, latest_lhb_date, ingest_lhb)
+    """Dedicated money-flow and LHB workspace. All inputs are T+1 close data."""
+    from ashare.ingest.fundflow import (
+        ingest_market_fund_flow,
+        ingest_stock_fund_flow,
+        load_stock_flow_for,
+        market_fund_flow_hist,
+    )
+    from ashare.ingest.lhb import (
+        ingest_lhb,
+        latest_lhb_date,
+        load_active_seats,
+        load_inst_recent,
+        load_lhb_for_symbols,
+    )
+
     con = get_con()
-    with st.expander("🐉 龙虎榜 · 资金流向 (主力机构 / 一线游资 · T+1 盘后)", expanded=False):
-        if st.button("刷新龙虎榜/资金流", key="refresh_lhb", use_container_width=False):
-            with st.spinner("拉取龙虎榜与资金流(约十几秒)…"):
+    init_schema(con)
+    watch_symbols = _capital_watch_symbols(con)
+    header, action = st.columns([0.82, 0.18], vertical_alignment="center")
+    header.markdown("### 资金流向")
+    with action:
+        refresh = st.button(
+            "刷新资金数据",
+            key="refresh_lhb",
+            icon=":material/sync:",
+            width="stretch",
+        )
+    if refresh:
+        with st.spinner("拉取龙虎榜与资金流…"):
+            try:
+                ak = get_ak()
+                ingest_lhb(con, ak)
+                ingest_market_fund_flow(con, ak)
+                ingest_stock_fund_flow(con, ak, watch_symbols)
+                st.success("资金数据已更新。")
+                _reset_db_connection()
+                st.rerun()
+            except Exception as e:  # noqa: BLE001
+                st.warning(f"刷新失败: {e}")
+
+    mff = market_fund_flow_hist(con, 20)
+    if mff.empty and latest_lhb_date(con) is None:
+        st.info("暂无龙虎榜与资金流数据。")
+        return
+
+    if not mff.empty:
+        latest = mff.iloc[0]
+        metrics = st.columns(4, gap="small")
+        metrics[0].metric(
+            "当日主力净流入",
+            f"{_safe_float(latest.get('main_net')) / 1e8:+.1f} 亿",
+            f"占比 {_safe_float(latest.get('main_ratio')):+.2f}%",
+            delta_color="off",
+        )
+        metrics[1].metric(
+            "近5日累计",
+            f"{float(mff.head(5)['main_net'].sum()) / 1e8:+.1f} 亿",
+            delta_color="off",
+        )
+        metrics[2].metric(
+            "近20日累计",
+            f"{float(mff['main_net'].sum()) / 1e8:+.1f} 亿",
+            delta_color="off",
+        )
+        metrics[3].metric(
+            "沪 / 深",
+            f"{_safe_float(latest.get('sh_pct')):+.2f}% / {_safe_float(latest.get('sz_pct')):+.2f}%",
+            delta_color="off",
+        )
+        st.caption(
+            f"数据截至 {str(latest['trade_date'])[:10]} · 主力口径为超大单与大单净额"
+        )
+
+        left, right = st.columns([0.58, 0.42], gap="large")
+        with left:
+            st.markdown("#### 大盘主力趋势")
+            chart = mff.sort_values("trade_date").copy()
+            net = pd.to_numeric(chart["main_net"], errors="coerce").fillna(0) / 1e8
+            fig = go.Figure(go.Bar(
+                x=chart["trade_date"].astype(str),
+                y=net,
+                marker_color=[UP if v >= 0 else DN for v in net],
+                hovertemplate="%{x}<br>主力净流 %{y:+.1f} 亿<extra></extra>",
+            ))
+            fig.add_hline(y=0, line_color="#8a94a3", line_width=1)
+            fig.update_layout(
+                height=300,
+                margin=dict(t=10, b=10, l=10, r=10),
+                xaxis=dict(title=None),
+                yaxis=dict(title="亿元", zeroline=False),
+            )
+            st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+
+        with right:
+            st.markdown("#### 自选 / 持仓主力流")
+            stock_flow = load_stock_flow_for(con, watch_symbols, days=5)
+            if stock_flow.empty:
+                st.caption("暂无自选或持仓个股资金流。")
+            else:
+                latest_flow = (
+                    stock_flow.sort_values(["symbol", "trade_date"], ascending=[True, False])
+                    .drop_duplicates("symbol")
+                )
+                totals = stock_flow.groupby("symbol", as_index=False)["main_net"].sum()
+                totals = totals.rename(columns={"main_net": "five_day_net"})
+                latest_flow = latest_flow.merge(totals, on="symbol", how="left")
+                names = {}
                 try:
-                    ak = get_ak()
-                    ingest_lhb(con, ak)
-                    ingest_market_fund_flow(con, ak)
-                    ingest_stock_fund_flow(con, ak, _capital_watch_symbols())
-                    st.success("已更新")
-                    _reset_db_connection()
-                    st.rerun()
-                except Exception as e:  # noqa: BLE001
-                    st.warning(f"刷新失败: {e}")
+                    pf_local = load_positions()
+                    names = {h.code.zfill(6): h.name for h in (pf_local.holdings if pf_local else [])}
+                except Exception:  # noqa: BLE001
+                    pass
+                latest_flow["名称"] = latest_flow["symbol"].map(names).fillna(latest_flow["symbol"])
+                latest_flow["当日净流(亿)"] = (latest_flow["main_net"] / 1e8).round(2)
+                latest_flow["5日净流(亿)"] = (latest_flow["five_day_net"] / 1e8).round(2)
+                show = latest_flow.rename(columns={
+                    "symbol": "代码", "pct_chg": "涨跌%", "main_ratio": "主力占比%",
+                })[["名称", "代码", "涨跌%", "主力占比%", "当日净流(亿)", "5日净流(亿)"]]
+                st.dataframe(
+                    show.style.map(
+                        _color,
+                        subset=["涨跌%", "主力占比%", "当日净流(亿)", "5日净流(亿)"],
+                    ),
+                    width="stretch",
+                    hide_index=True,
+                    height=min(300, 36 + 35 * len(show)),
+                )
 
-        mff = market_fund_flow_hist(con, 5)
-        if mff.empty and latest_lhb_date(con) is None:
-            st.info("暂无龙虎榜/资金流数据 — 点上方「刷新」，或命令行跑 `ashare lhb` / `ashare fundflow`。")
-            return
-        if not mff.empty:
-            latest = mff.iloc[0]
-            cols = st.columns(3)
-            cols[0].metric("大盘主力净流入(当日)", f"{latest['main_net']/1e8:.1f} 亿",
-                           f"{latest['main_ratio']:+.2f}%")
-            cols[1].metric("近5日主力累计", f"{mff['main_net'].sum()/1e8:.1f} 亿")
-            cols[2].metric("沪 / 深", f"{latest['sh_pct']:+.2f}% / {latest['sz_pct']:+.2f}%")
-            st.caption(f"数据截至 {str(latest['trade_date'])[:10]} · 主力=超大单+大单(东财按单笔金额分档推断)")
+    st.divider()
+    st.markdown("### 龙虎榜")
+    hit = load_lhb_for_symbols(con, watch_symbols, days=10)
+    if hit.empty:
+        st.caption("近10日自选与持仓没有龙虎榜记录。")
+    else:
+        st.markdown("#### 自选 / 持仓上榜")
+        show = hit.copy()
+        show["龙虎净买(亿)"] = (show["net_buy"] / 1e8).round(2)
+        show["机构净买(亿)"] = (show["org_net_amt"] / 1e8).round(2)
+        show = show[["trade_date", "symbol", "name", "pct_chg", "龙虎净买(亿)",
+                     "机构净买(亿)", "reason"]].rename(columns={
+                         "trade_date": "日期", "symbol": "代码", "name": "名称",
+                         "pct_chg": "涨跌%", "reason": "上榜原因",
+                     })
+        st.dataframe(
+            show.style.map(_color, subset=["涨跌%", "龙虎净买(亿)", "机构净买(亿)"]),
+            width="stretch",
+            hide_index=True,
+        )
 
-        # 自选/持仓上榜 (最重要)
-        hit = load_lhb_for_symbols(con, _capital_watch_symbols(), days=10)
-        if not hit.empty:
-            st.markdown("**⭐ 自选/持仓上龙虎榜 (近10日)**")
-            show = hit.copy()
-            show["龙虎净买(亿)"] = (show["net_buy"] / 1e8).round(2)
-            show["机构净买(亿)"] = (show["org_net_amt"] / 1e8).round(2)
+    institutions, seats_col = st.columns(2, gap="large")
+    inst = load_inst_recent(con, 8)
+    with institutions:
+        st.markdown("#### 机构净买 Top")
+        if inst.empty:
+            st.caption("暂无机构席位数据。")
+        else:
+            table = inst.copy()
+            table["机构净买(亿)"] = (table["org_net_amt"] / 1e8).round(2)
+            table = table[["symbol", "name", "pct_chg", "机构净买(亿)", "buy_org_n"]].rename(
+                columns={"symbol": "代码", "name": "名称", "pct_chg": "涨跌%",
+                         "buy_org_n": "买方机构数"}
+            )
             st.dataframe(
-                show[["trade_date", "symbol", "name", "pct_chg", "龙虎净买(亿)",
-                      "机构净买(亿)", "reason"]].rename(columns={
-                          "trade_date": "日期", "symbol": "代码", "name": "名称",
-                          "pct_chg": "涨跌%", "reason": "上榜原因"}),
-                use_container_width=True, hide_index=True)
-
-        c1, c2 = st.columns(2)
-        inst = load_inst_recent(con, 8)
-        with c1:
-            st.markdown("**主力机构净买 Top**")
-            if inst.empty:
-                st.caption("—")
-            else:
-                t = inst.copy()
-                t["机构净买(亿)"] = (t["org_net_amt"] / 1e8).round(2)
-                st.dataframe(
-                    t[["symbol", "name", "pct_chg", "机构净买(亿)", "buy_org_n"]].rename(
-                        columns={"symbol": "代码", "name": "名称", "pct_chg": "涨跌%",
-                                 "buy_org_n": "买方机构数"}),
-                    use_container_width=True, hide_index=True)
-        seats = load_active_seats(con, 8)
-        with c2:
-            st.markdown("**活跃游资营业部 Top**")
-            if seats.empty:
-                st.caption("—")
-            else:
-                t = seats.copy()
-                t["净买(亿)"] = (t["net_amt"] / 1e8).round(2)
-                t["营业部"] = t["yyb_name"].str.replace("证券股份有限公司", "", regex=False)
-                st.dataframe(
-                    t[["营业部", "净买(亿)", "buy_stock_n"]].rename(
-                        columns={"buy_stock_n": "买入只数"}),
-                    use_container_width=True, hide_index=True)
-        st.caption("龙虎榜/机构/游资均为交易所 T+1 盘后公布，用于验证'谁在买'，非实时。")
+                table.style.map(_color, subset=["涨跌%", "机构净买(亿)"]),
+                width="stretch",
+                hide_index=True,
+            )
+    seats = load_active_seats(con, 8)
+    with seats_col:
+        st.markdown("#### 活跃营业部 Top")
+        if seats.empty:
+            st.caption("暂无营业部数据。")
+        else:
+            table = seats.copy()
+            table["净买(亿)"] = (table["net_amt"] / 1e8).round(2)
+            table["营业部"] = table["yyb_name"].str.replace("证券股份有限公司", "", regex=False)
+            table = table[["营业部", "净买(亿)", "buy_stock_n"]].rename(
+                columns={"buy_stock_n": "买入只数"}
+            )
+            st.dataframe(
+                table.style.map(_color, subset=["净买(亿)"]),
+                width="stretch",
+                hide_index=True,
+            )
+    st.caption("龙虎榜、机构与营业部数据均为交易所 T+1 盘后口径，非实时成交信号。")
 
 
 def page_sentiment():
-    head = st.columns([0.48, 0.16, 0.17, 0.19])
-    head[0].subheader("舆情分析 · News & Sentiment Monitor")
+    head = st.columns([0.52, 0.16, 0.16, 0.16], vertical_alignment="bottom")
+    head[0].title("市场情报工作台")
+    head[0].caption("A股行情、资金与资讯交叉验证")
     with head[1]:
-        refresh_all = st.button("刷新全部", use_container_width=True)
+        refresh_all = st.button(
+            "刷新全部",
+            icon=":material/sync:",
+            type="primary",
+            width="stretch",
+        )
     with head[2]:
-        refresh_market = st.button("刷新市场温度", use_container_width=True)
+        refresh_market = st.button(
+            "刷新行情",
+            icon=":material/monitoring:",
+            width="stretch",
+        )
     with head[3]:
-        summarize = st.button("生成/更新AI总结", use_container_width=True)
-    st.caption("页面刷新会先同步新闻与市场温度；突发预警用本地事件规则识别，AI 总结在样本过期或手动触发时生成。")
+        summarize = st.button(
+            "更新AI总结",
+            icon=":material/auto_awesome:",
+            width="stretch",
+        )
+
+    view = st.segmented_control(
+        "工作区",
+        ["市场概览", "资讯监控", "资金与龙虎榜", "数据状态"],
+        default="市场概览",
+        required=True,
+        key="market_workspace",
+        label_visibility="collapsed",
+        width="stretch",
+    )
     con = get_con()
 
     if refresh_all:
@@ -1238,101 +1853,64 @@ def page_sentiment():
             _reset_db_connection()
             st.rerun()
 
-    info = _refresh_page_inputs()
-    if info.get("news_error"):
-        st.warning(f"新闻自动刷新失败: {info['news_error']}")
-    if info.get("market_error"):
-        st.warning(f"市场温度自动刷新失败: {info['market_error']}")
-    if info.get("ai") and info["ai"].get("row") is not None:
-        st.success(f"AI 总结已自动更新: {info.get('ai_reason', '')}")
-        _reset_db_connection()
-        st.rerun()
+    if view in ("市场概览", "资讯监控"):
+        info = _refresh_page_inputs()
+        if info.get("news_error"):
+            st.warning(f"新闻自动刷新失败: {info['news_error']}")
+        if info.get("market_error"):
+            st.warning(f"市场温度自动刷新失败: {info['market_error']}")
+        if info.get("ai") and info["ai"].get("row") is not None:
+            st.success(f"AI 总结已自动更新: {info.get('ai_reason', '')}")
+            _reset_db_connection()
+            st.rerun()
 
     today_news = _news_for_day(con, date.today())
+    news_date = date.today()
+    news = today_news
+    if news.empty:
+        news_date = con.execute("SELECT max(news_date) FROM news_raw").fetchone()[0]
+        news = _news_for_day(con, news_date) if news_date is not None else today_news
     current_sent = latest_sentiment(con)
     current_market = latest_market_breadth(con)
-    _render_sentiment_overview(today_news, current_sent, current_market)
 
-    with st.expander("数据质量与 LLM 配置", expanded=False):
+    status = []
+    if current_market and current_market.get("snap_time") is not None:
+        status.append(f"行情 {pd.Timestamp(current_market['snap_time']):%m-%d %H:%M}")
+    if current_sent:
+        status.append(f"舆情 {str(current_sent.get('as_of_date'))[:10]}")
+    if news_date is not None:
+        status.append(f"资讯 {str(news_date)[:10]} · {len(news)} 条")
+    if status:
+        st.caption("数据状态 · " + " · ".join(status))
+
+    if view == "市场概览":
+        _render_market_overview(news, current_sent, current_market)
+    elif view == "资讯监控":
+        st.markdown("### 实时监控")
+        _live_news_monitor()
+        st.divider()
+        _render_attention_queues(news)
+        st.divider()
+        _render_news_feed(news, news_date)
+    elif view == "资金与龙虎榜":
+        _capital_flow_panel()
+    else:
+        st.markdown("### 数据状态")
         _render_news_quality_panel(today_news, current_sent)
+        st.markdown("#### 数据资产")
+        _render_data_inventory(con)
+        st.divider()
+        st.markdown("### AI 运行配置")
         _render_llm_config_card()
-    _render_local_news_panel(today_news)
-
-    _live_news_monitor()
-
-    st.divider()
-    _capital_flow_panel()
-
-    st.divider()
-    st.markdown("##### AI 市场舆情详情")
-    sent = current_sent
-    if not sent:
-        news = _news_for_day(con, date.today())
-        if not news.empty:
-            st.info("已拉到最新新闻，但暂未生成 AI 舆情总结。请检查 LLM 密钥或模型配置。")
-            _render_ai_input_sample(news)
-            _render_news_feed(news, date.today())
-        else:
-            st.info("暂无舆情数据，也没有拉到今日新闻。请检查新闻源网络或稍后再刷新。")
-        return
-
-    as_of = str(sent["as_of_date"])[:10]
-    score = float(sent["score"])
-    created = sent.get("created_at")
-    created_txt = pd.Timestamp(created).strftime("%Y-%m-%d %H:%M:%S") if created is not None and pd.notna(created) else "n/a"
-    if as_of < date.today().isoformat():
-        st.warning(f"⚠ 最新舆情停留在 {as_of}(非今日)——今日可能尚未生成, 或新闻源/LLM 异常。"
-                   "下方为最近一次分析, 已诚实标注日期。")
-
-    arrow = "Risk-on" if score > 0.1 else "Risk-off" if score < -0.1 else "Neutral"
-    c1, c2 = st.columns([0.26, 0.74])
-    with c1:
-        st.metric(f"{arrow} · {sent['label']}", f"{score:+.2f}",
-                  help="-1 极空/恐慌 ~ 0 中性 ~ +1 极多/亢奋")
-        st.caption(f"基于 {int(sent['n_news'])} 条新闻 · {as_of}")
-        st.caption(f"生成时间 {created_txt}")
-        st.caption(f"AI生成({sent.get('model','')}) · 仅供参考非投资建议")
-        st.caption(f"Base: {_llm_runtime_config()['base_host']}")
-    with c2:
-        st.markdown(f"#### {sent['summary']}")
-        cols = st.columns(2)
-        cols[0].markdown("**机会/正面主题**")
-        for item in [x for x in str(sent.get("bullish") or "").split("；") if x]:
-            cols[0].caption("• " + item)
-        if not sent.get("bullish"):
-            cols[0].caption("—")
-        cols[1].markdown("**风险/负面主题**")
-        for item in [x for x in str(sent.get("bearish") or "").split("；") if x]:
-            cols[1].caption("• " + item)
-        if not sent.get("bearish"):
-            cols[1].caption("—")
-
-    st.divider()
-    hist = sentiment_history(con, days=30).sort_values("as_of_date")
-    if len(hist) >= 2:
-        st.markdown("##### 情绪走势(近30个有数据的交易日)")
-        cols = [UP if s > 0.1 else DN if s < -0.1 else "#8395a7" for s in hist["score"]]
-        fig = go.Figure(go.Scatter(
-            x=hist["as_of_date"].astype(str), y=hist["score"], mode="lines+markers",
-            line=dict(color="#2b6cb0"), marker=dict(color=cols, size=8),
-            hovertemplate="%{x}<br>情绪分 %{y:+.2f}<extra></extra>"))
-        fig.add_hline(y=0, line_dash="dot", line_color="#cbd5e0")
-        fig.update_layout(height=240, margin=dict(t=10, b=10, l=10, r=10),
-                          yaxis=dict(range=[-1, 1], title="情绪分"))
-        st.plotly_chart(fig, use_container_width=True)
-
-    nd = con.execute("SELECT max(news_date) FROM news_raw").fetchone()[0]
-    news = _news_for_day(con, nd)
-    _render_ai_input_sample(news)
-    _render_news_feed(news, nd)
+        _render_ai_input_sample(news)
 
 
 @st.fragment(run_every=MONITOR_INTERVAL)
 def _live_news_monitor():
     st.markdown("##### 实时新闻监控")
     ctrl = st.columns([0.2, 0.2, 0.6])
-    force = ctrl[0].button("立即轮询", use_container_width=True)
-    reset = ctrl[1].button("重置基线", use_container_width=True)
+    force = ctrl[0].button("立即轮询", width="stretch")
+    reset = ctrl[1].button("重置基线", width="stretch")
     res = _monitor_news_once(force=force, reset=reset)
 
     status = st.columns(4)
@@ -1395,39 +1973,97 @@ def _live_news_monitor():
 
 
 def _render_news_feed(news: pd.DataFrame, nd):
-    st.markdown("##### 源新闻流")
-    st.caption("当前源: 东财全球财经快讯 + 新闻联播。舆情总结只基于这里展示的入库新闻；更深的外媒、社媒、个股实体识别和突发事件预警需要继续接源。")
+    st.markdown("### 新闻流")
     if news is None or news.empty:
         st.caption("暂无入库新闻。")
         return
-    holding_terms = _holding_watch_terms()
-    label_map = {"em_global": "财经快讯(含海外宏观/外盘)", "cctv": "新闻联播(国内政策面)"}
-    st.caption(f"新闻日期 {nd} · 共 {len(news)} 条")
-    for code, grp in news.groupby("source"):
-        with st.expander(f"{label_map.get(code, code)} · {len(grp)} 条",
-                         expanded=(code == "em_global")):
-            for r in grp.itertuples():
-                info = _classify_news_row(r, holding_terms)
-                badges = []
-                if info["risk_level"] >= 2:
-                    badges.append("风险" + ("高" if info["risk_level"] >= 3 else "中"))
-                if info["holding_hits"]:
-                    badges.append("持仓")
-                if info["polarity"] != "中性":
-                    badges.append(info["polarity"])
-                if info["themes"]:
-                    badges.append("、".join(info["themes"][:2]))
-                prefix = f"{' / '.join(badges)} · " if badges else ""
-                st.markdown(f"- {prefix}{_format_news_title(r)}")
-                if info["holding_hits"]:
-                    hit_txt = []
-                    for h in info["holding_hits"]:
-                        hit_txt.append(f"{h['name']}({h['code']}): " + "、".join(h["matched"]))
-                    st.caption("　命中: " + "；".join(hit_txt))
-                if info["risk_reasons"]:
-                    st.caption("　规则: " + "；".join(info["risk_reasons"]))
-                if isinstance(r.summary, str) and r.summary.strip() and r.summary.strip() != str(r.title).strip():
-                    st.caption("　" + r.summary[:120])
+    label_map = {"em_global": "财经快讯", "cctv": "新闻联播"}
+    sources = sorted(str(x) for x in news["source"].dropna().unique())
+    controls = st.columns([0.42, 0.2, 0.24, 0.14], vertical_alignment="bottom")
+    with controls[0]:
+        query = st.text_input(
+            "搜索新闻",
+            placeholder="搜索标题或正文",
+            label_visibility="collapsed",
+            key="news_search",
+            icon=":material/search:",
+        ).strip().lower()
+    with controls[1]:
+        source = st.selectbox(
+            "来源",
+            ["全部"] + sources,
+            format_func=lambda x: label_map.get(x, x),
+            label_visibility="collapsed",
+            key="news_source",
+        )
+    with controls[2]:
+        focus = st.selectbox(
+            "关注类型",
+            ["全部", "中高风险", "持仓相关", "偏多", "偏空"],
+            label_visibility="collapsed",
+            key="news_focus",
+        )
+    with controls[3]:
+        limit = st.selectbox(
+            "显示数量",
+            [25, 50, 100],
+            index=1,
+            format_func=lambda value: f"{value} 条",
+            label_visibility="collapsed",
+            key="news_limit",
+        )
+
+    items = _enrich_news(news)
+    filtered = []
+    for item in items:
+        row = item["row"]
+        if source != "全部" and str(getattr(row, "source", "")) != source:
+            continue
+        if query and query not in _text_of_news(row).lower():
+            continue
+        if focus == "中高风险" and item["risk_level"] < 2:
+            continue
+        if focus == "持仓相关" and not item["holding_hits"]:
+            continue
+        if focus == "偏多" and item["local_score"] <= 0:
+            continue
+        if focus == "偏空" and item["local_score"] >= 0:
+            continue
+        filtered.append(item)
+
+    st.caption(f"新闻日期 {nd} · 匹配 {len(filtered)} / {len(news)} 条 · 当前显示前 {min(limit, len(filtered))} 条")
+    if not filtered:
+        st.info("没有符合当前筛选条件的新闻。")
+        return
+
+    for item in filtered[:limit]:
+        row = item["row"]
+        source_name = label_map.get(str(getattr(row, "source", "")), str(getattr(row, "source", "")))
+        badges = [source_name]
+        if item["risk_level"] >= 2:
+            badges.append("风险" + ("高" if item["risk_level"] >= 3 else "中"))
+        if item["holding_hits"]:
+            badges.append("持仓")
+        if item["polarity"] != "中性":
+            badges.append(item["polarity"])
+        if item["themes"]:
+            badges.append("、".join(item["themes"][:2]))
+        st.markdown(f"- **{' · '.join(badges)}**　{_format_news_title(row)}")
+        details = []
+        if item["holding_hits"]:
+            details.append("关联 " + "、".join(
+                f"{h['name']}({h['code']})" for h in item["holding_hits"]
+            ))
+        if item["risk_reasons"]:
+            details.append("触发 " + "；".join(item["risk_reasons"]))
+        if details:
+            st.caption("　" + " · ".join(details))
+        if (
+            isinstance(row.summary, str)
+            and row.summary.strip()
+            and row.summary.strip() != str(row.title).strip()
+        ):
+            st.caption("　" + row.summary[:160])
 
 
 def page_stockeval():
@@ -1483,7 +2119,7 @@ def page_positions():
              "shares": float(h.shares), "cost": float(h.cost)} for h in pf.holdings]
     df = pd.DataFrame(rows, columns=["code", "name", "type", "shares", "cost"])
     edited = st.data_editor(
-        df, num_rows="dynamic", use_container_width=True, key="pos_editor",
+        df, num_rows="dynamic", width="stretch", key="pos_editor",
         column_config={
             "code": st.column_config.TextColumn("代码", help="6位数字代码", max_chars=6, required=True),
             "name": st.column_config.TextColumn("名称", help="自己看的, 随便写"),
@@ -1496,7 +2132,7 @@ def page_positions():
     cash = st.number_input("现金仓位(元, 计入总资产算权重)", min_value=0.0,
                            value=float(pf.cash), step=100.0)
     c1, c2 = st.columns([0.18, 0.82])
-    if c1.button("💾 保存", type="primary", use_container_width=True):
+    if c1.button("💾 保存", type="primary", width="stretch"):
         try:
             save_positions(edited.to_dict("records"), cash)
         except ValueError as e:
@@ -1583,7 +2219,7 @@ def page_recommend():
                     "止盈": lv.target if lv else None, "止损": lv.stop if lv else None})
         rows.append(row)
     st.dataframe(pd.DataFrame(rows).style.map(_color, subset=["今日%", "评分"]),
-                 use_container_width=True, hide_index=True)
+                 width="stretch", hide_index=True)
     st.caption("现价/今日% 为腾讯实时(60秒缓存); 评分·PE分位·ROE·买卖价位基于最新收盘日。")
 
     labels = {f"{s.metadata.get('name','')}({s.target})": s for s in stocks}
@@ -1605,7 +2241,7 @@ def page_recommend():
     if not dfb.empty:
         fig = price_chart(s.metadata.get("name", ""), dfb, 250)
         add_price_levels(fig, lv)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
     with st.expander("🔍 健康分拆解(每个因子的贡献)"):
         render_breakdown(s)
 
@@ -1651,10 +2287,7 @@ def page_holding(h: Holding):
         st.caption("场外基金按**单位净值**绘制(无 OHLC), 净值为 T-1; 定投类不设买卖价位。")
     fig = price_chart(h.name, df, look)
     add_price_levels(fig, lv)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 page_sentiment()
-
-st.sidebar.divider()
-st.sidebar.caption(f"日期 {date.today().isoformat()}")
