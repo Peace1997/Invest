@@ -136,15 +136,10 @@ def _ts_ingest_lhb(con, start: date, end: date) -> dict:
         dates = [end.strftime("%Y%m%d")]
     det, inst, yyb = [], [], []
     for d in dates:
-        tl = ti = None
-        try:
-            tl = _ts_call(pro.top_list, trade_date=d)
-        except Exception as e:  # noqa: BLE001
-            log.warning("top_list %s 失败: %s", d, e)
-        try:
-            ti = _ts_call(pro.top_inst, trade_date=d)
-        except Exception as e:  # noqa: BLE001
-            log.warning("top_inst %s 失败: %s", d, e)
+        # Let a fully unavailable/unauthorized Tushare endpoint bubble up so
+        # ingest_lhb can execute the advertised Eastmoney fallback.
+        tl = _ts_call(pro.top_list, trade_date=d)
+        ti = _ts_call(pro.top_inst, trade_date=d)
         name_map = close_map = pct_map = {}
         if tl is not None and not tl.empty:
             det.append(_map_top_list(tl))
@@ -228,12 +223,14 @@ def load_lhb_for_symbols(con, symbols: list[str], days: int = 10) -> pd.DataFram
 
 
 def load_active_seats(con, top: int = 8) -> pd.DataFrame:
-    """最新交易日买入净额最高的活跃营业部(一线游资风向标)。"""
+    """最新交易日活跃营业部，排除机构与沪深股通专用席位。"""
     return con.execute(
         """SELECT trade_date, yyb_name, buy_amt, sell_amt, net_amt,
                   buy_stock_n, buy_stocks
            FROM lhb_yyb
            WHERE trade_date = (SELECT max(trade_date) FROM lhb_yyb)
+             AND coalesce(yyb_name, '') NOT LIKE '%机构专用%'
+             AND coalesce(yyb_name, '') NOT LIKE '%股通专用%'
            ORDER BY net_amt DESC LIMIT ?""", [int(top)]).df()
 
 

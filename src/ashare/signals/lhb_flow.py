@@ -49,7 +49,7 @@ def section_market_fund_flow(con, days: int = 5) -> str:
     cum = df["main_net"].sum()
     lines = [_section_header(f"大盘资金流 · 截至 {_ds(latest['trade_date'])} (主力=超大+大单, 东财推断)")]
     lines.append(
-        f"│ 当日 主力净流入 {_amt(latest['main_net'])} ({latest['main_ratio']:+.2f}%)  "
+        f"│ 当日 主力净流入 {_amt(latest['main_net'])} ({_pct(latest['main_ratio'])})  "
         f"沪 {_pct(latest['sh_pct'])} 深 {_pct(latest['sz_pct'])}"
     )
     lines.append(f"│ 近{len(df)}日 主力累计净流入 {_amt(cum)}")
@@ -99,6 +99,7 @@ def section_lhb(con, symbols: list[str] | None = None, top: int = 6) -> str:
 
 def render_stock_flow_table(con, symbols: list[str], days: int = 5) -> str:
     """给定个股近 days 天主力净流入明细(CLI 用)。"""
+    _, _, _pct = _helpers()
     df = load_stock_flow_for(con, symbols, days)
     if df.empty:
         return "个股资金流: 无数据 (先跑 `ashare fundflow`)"
@@ -107,7 +108,7 @@ def render_stock_flow_table(con, symbols: list[str], days: int = 5) -> str:
         cum = g["main_net"].sum()
         latest = g.sort_values("trade_date", ascending=False).iloc[0]
         lines.append(
-            f"  {sym} 当日 {_amt(latest['main_net'])} ({latest['main_ratio']:+.2f}%) · "
+            f"  {sym} 当日 {_amt(latest['main_net'])} ({_pct(latest['main_ratio'])}) · "
             f"近{len(g)}日累计 {_amt(cum)}"
         )
     return "\n".join(lines)

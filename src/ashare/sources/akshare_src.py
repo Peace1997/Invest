@@ -566,11 +566,14 @@ class AkSource(DataSource):
         cols = ["trade_date", "yyb_code", "yyb_name", "buy_stock_n", "sell_stock_n",
                 "buy_amt", "sell_amt", "net_amt", "buy_stocks"]
         df = df.copy()
-        df["trade_date"] = pd.to_datetime(df["trade_date"]).dt.date
-        df["yyb_code"] = df["yyb_code"].astype(str)
         for c in cols:
             if c not in df.columns:
                 df[c] = pd.NA
+        df["trade_date"] = pd.to_datetime(df["trade_date"]).dt.date
+        # stock_lhb_hyyyb_em usually has no 营业部代码. The name is stable
+        # enough for the per-day primary key and matches the Tushare adapter.
+        has_code = df["yyb_code"].notna() & df["yyb_code"].astype(str).str.strip().ne("")
+        df["yyb_code"] = df["yyb_code"].where(has_code, df["yyb_name"]).astype(str)
         return df[cols]
 
     @staticmethod

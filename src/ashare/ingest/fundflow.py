@@ -58,7 +58,7 @@ def _ts_market_flow(con) -> int:
     df = _ts_call(pro.moneyflow_mkt_dc,
                   start_date=start.strftime("%Y%m%d"), end_date=end.strftime("%Y%m%d"))
     if df is None or df.empty:
-        return 0
+        raise RuntimeError("tushare moneyflow_mkt_dc 返回空数据")
     df = df.rename(columns=_MKT_RENAME).copy()   # 金额单位=元, 不缩放
     df["trade_date"] = pd.to_datetime(df["trade_date"]).dt.date
     for c in _MKT_COLS:
@@ -96,7 +96,10 @@ def _ts_stock_flow(con, symbols: list[str], days: int = 10) -> int:
     pro = get_pro()
     syms = {str(s).zfill(6) for s in symbols}
     total = 0
-    for d in _recent_trade_dates(con, days):
+    dates = _recent_trade_dates(con, days)
+    if not dates:
+        raise RuntimeError("本地交易日历为空，无法按日拉取 tushare 个股资金流")
+    for d in dates:
         df = _ts_call(pro.moneyflow_dc, trade_date=d)     # 全市场一次调用
         if df is None or df.empty:
             continue
@@ -113,6 +116,8 @@ def _ts_stock_flow(con, symbols: list[str], days: int = 10) -> int:
             if c not in df.columns:
                 df[c] = pd.NA
         total += upsert(con, "stock_fund_flow", df[_DC_COLS], keys=["symbol", "trade_date"])
+    if total == 0:
+        raise RuntimeError("tushare moneyflow_dc 未返回关注标的，回退逐只拉取")
     return total
 
 
