@@ -8,12 +8,50 @@ def _hdr(t: str) -> str:
     return f"\n┌─ {t} {HR[len(t)+3:]}"
 
 
+def _pct(v) -> str:
+    if v is None:
+        return "  —"
+    try:
+        return f"{float(v):+.1f}"
+    except (TypeError, ValueError):
+        return "  —"
+
+
 def render_recommendations(stocks, stock_uni, sectors, sector_desc,
+                           funds=None, fund_desc: str = "",
                            held: set[str] | None = None) -> str:
     held = held or set()
+    funds = funds or []
     out = ["╔══════════════════════════════════════════════════════════════════╗",
-           "║  选股 / 选板块 推荐 (规则打分, 非投资指令)",
+           "║  指数基金 / 选股 / 选板块 推荐 (规则打分, 非投资指令)",
            "╚══════════════════════════════════════════════════════════════════╝"]
+
+    out.append(_hdr(f"指数基金买卖观察 Top{len(funds)}  · {fund_desc}"))
+    if funds:
+        out.append("│ 代码     名称            动作      策略分  现价   日%    周%    月%    信号")
+        for s in funds:
+            m = s.metadata
+            tag = " (持仓)" if s.target in held else ""
+            pct1 = _pct(m.get("today_pct"))
+            pct5 = _pct(m.get("week_pct"))
+            pct21 = _pct(m.get("month_pct"))
+            out.append(
+                f"│ {s.target:<8} {(m.get('name','')[:12]):<12}{tag:<6} "
+                f"{m.get('action',''):<8} {m.get('strategy_score',0):>3}  "
+                f"{m.get('close',0):>6.3f} {pct1:>6} {pct5:>6} {pct21:>6}  {s.reason[:26]}")
+        out.append("│")
+        out.append("│ 详细拆解:")
+        for s in funds:
+            m = s.metadata
+            out.append(f"│  ▸ {m.get('name','')}({s.target}) {m.get('posture','')} · {m.get('action','')} · 策略分 {m.get('strategy_score')}")
+            for b in m.get("bullets", [])[:4]:
+                out.append(f"│      • {b}")
+            lv = m.get("levels")
+            if lv:
+                out.append(f"│      🎯 {lv.status}")
+                out.append(f"│         买入区 {lv.buy_lo}~{lv.buy_hi} · 止盈 {lv.target} · 止损 {lv.stop}")
+    else:
+        out.append("│ (无足够数据的指数基金候选 — 先回填 ETF 日线或基金 NAV)")
 
     out.append(_hdr(f"主板个股 Top{len(stocks)}  · universe: {stock_uni}"))
     if stocks:
