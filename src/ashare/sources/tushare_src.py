@@ -16,7 +16,7 @@ from pathlib import Path
 import tushare as ts
 
 # 代理端点(非官方 tushare.pro,购买方提供;非机密,可入库)
-_HTTP_URL = "https://tt.dailyfetch.top/"
+_HTTP_URL = "https://ts.gyzcloud.top/api"
 
 # token 文件:仓库根目录下的 .tushare_token(已 gitignore)
 _TOKEN_FILE = Path(__file__).resolve().parents[3] / ".tushare_token"
@@ -36,7 +36,9 @@ def _read_token() -> str:
 @lru_cache(maxsize=1)
 def get_pro():
     """返回已配置好端点的 pro_api 句柄(进程内复用)。"""
-    pro = ts.pro_api(_read_token())
+    token = _read_token()
+    ts.set_token(token)
+    pro = ts.pro_api()
     pro._DataApi__http_url = _HTTP_URL
     return pro
 
