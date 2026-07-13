@@ -25,3 +25,6 @@ logs/
 # 数据仓库(412MB DuckDB + 报告); 切勿入库, 否则 git add 会锁库并撑爆仓库
 data/
 .codegraph/
+
+# Serena/Codex 索引工具产物(非项目源码)
+.serena/
