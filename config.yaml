@@ -3,6 +3,7 @@
 paths:
   data_dir: data
   warehouse: data/warehouse.duckdb
+  decision_journal: data/decision_journal.sqlite3
   raw_dir: data/raw
 
 # 历史回填起始日 (Phase 0 默认 10 年)
@@ -63,6 +64,19 @@ endday:
   enabled: true
   pool: 25      # 量价初筛候选数(喂给 LLM)
   picks: 5      # 最终点名上限
+
+# 决策信号留痕 + outcome 回溯。缺省也能跑；这里显式列出便于调整。
+decision_signal:
+  enabled: true
+  horizons:
+    momentum: 60
+    value: 60
+    leader: 60
+    reversal: 20
+    premarket: 1
+    endday: 1
+    pf: 20
+  hit_excess_pct: 1.0
 
 # 分钟行情落库 (Tushare stk_mins, 仅个股; ETF/指数不支持).
 # 范围 = watchlist + 持仓个股(自动并入). 口径对齐 daily_bar(手/元). 后复权读 minute_bar_adj.

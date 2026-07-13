@@ -9,7 +9,8 @@
   · 收在当日高位(现价靠近最高、未冲高回落) —— 尾盘资金维持的标志
   · 强于今开(现价高于开盘价, 全天净红)
   · 放量(当日成交额 / 昨日全天成交额, 14:30 已放出明显量)
-量价初筛 → DeepSeek 结合今日舆情点名 3-5 只 → Server酱 推送。只读 DB, 不写库。
+量价初筛 → DeepSeek 结合今日舆情点名 3-5 只 → Server酱 推送。分析阶段只读 DuckDB，
+CLI 将选中线索及决策时价格写入 SQLite 决策日志。
 """
 from __future__ import annotations
 import json
@@ -22,6 +23,7 @@ from ..sources import AkSource
 from ..llm import complete, NoKeyError
 from ..notify.push import send_push
 from .sentiment import latest_sentiment
+from .shortterm_output import enrich_selected_items
 
 log = logging.getLogger(__name__)
 
@@ -155,5 +157,7 @@ def run_endday(con, cfg: dict | None = None, force: bool = False) -> dict:
     body = "\n".join(lines)
 
     ok = send_push(title, body, cfg.get("alerts", {}))
+    items = enrich_selected_items(picks, cands, as_of=today, limit=n_pick)
     return {"picks": len(picks), "pushed": ok,
-            "names": [p.get("name") for p in picks[:n_pick]]}
+            "names": [p.get("name") for p in items],
+            "items": items}

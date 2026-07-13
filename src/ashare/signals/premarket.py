@@ -5,7 +5,8 @@
 不保证盈利。仅主板(60/00), 排除 ST/退/一字板(买不进)。
 
 流程: 全市场快照 → 量价初筛(竞价高开+放量+昨日接力, 缩到~25只) → DeepSeek 结合今日舆情
-点名 3-5 只 + 理由/关注价/止损/风险 → Server酱 推送。只读 DB, 不写库(短线线索不留档)。
+点名 3-5 只 + 理由/关注价/止损/风险 → Server酱 推送。分析阶段只读 DuckDB，
+CLI 将选中线索及决策时价格写入 SQLite 决策日志。
 """
 from __future__ import annotations
 import json
@@ -18,6 +19,7 @@ from ..sources import AkSource
 from ..llm import complete, NoKeyError
 from ..notify.push import send_push
 from .sentiment import latest_sentiment
+from .shortterm_output import enrich_selected_items
 
 log = logging.getLogger(__name__)
 
@@ -143,5 +145,7 @@ def run_premarket(con, cfg: dict | None = None, force: bool = False) -> dict:
     body = "\n".join(lines)
 
     ok = send_push(title, body, cfg.get("alerts", {}))
+    items = enrich_selected_items(picks, cands, as_of=today, limit=n_pick)
     return {"picks": len(picks), "pushed": ok,
-            "names": [p.get("name") for p in picks[:n_pick]]}
+            "names": [p.get("name") for p in items],
+            "items": items}

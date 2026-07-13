@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import logging
 
+from . import decision_signals
 from .config import load, resolve_path
 from .sources import AkSource
 from .storage import open_db, init_schema
@@ -32,6 +33,16 @@ def _setup_logging():
         format="%(asctime)s %(levelname)s %(name)s | %(message)s",
         datefmt="%H:%M:%S",
     )
+
+
+def _record_decisions(write) -> None:
+    """Keep decision journaling best-effort without duplicating CLI error handling."""
+    try:
+        written = write()
+        if written:
+            print(f"🧾 决策信号已留痕: {written} 条")
+    except Exception as exc:  # noqa: BLE001
+        print(f"⚠ 决策信号留痕失败(不影响主流程): {exc}")
 
 
 def cmd_init(cfg, con, src):
@@ -133,6 +144,9 @@ def cmd_premarket(cfg, con, src, args=None):
     force = args is not None and getattr(args, "force", False)
     res = run_premarket(con, cfg, force=force)
     print("开盘竞价短线:", res)
+    _record_decisions(
+        lambda: decision_signals.record_shortterm_result(cfg, con, "premarket", res)
+    )
 
 
 def cmd_endday(cfg, con, src, args=None):
@@ -142,6 +156,9 @@ def cmd_endday(cfg, con, src, args=None):
     force = args is not None and getattr(args, "force", False)
     res = run_endday(con, cfg, force=force)
     print("尾盘短线:", res)
+    _record_decisions(
+        lambda: decision_signals.record_shortterm_result(cfg, con, "endday", res)
+    )
 
 
 def cmd_stock(cfg, con, src, args=None):
@@ -289,6 +306,8 @@ def cmd_pf(cfg, con, src, args=None):
         out_path.write_text(text, encoding="utf-8")
         print(f"📄 持仓日评已保存: {out_path}")
 
+    _record_decisions(lambda: decision_signals.record_pf_signals(cfg, con, pf, advice))
+
 
 def cmd_risk(cfg, con, src):
     """组合层风控: 真实分散度(相关性)/集中度/市场暴露/波动/压力测试。只读。"""
@@ -369,6 +388,33 @@ def cmd_recommend(cfg, con, src, args=None):
         p = out_dir / f"recommend-{date.today().isoformat()}.txt"
         p.write_text(text, encoding="utf-8")
         print(f"📄 已保存: {p}")
+    _record_decisions(
+        lambda: decision_signals.record_recommend_signals(
+            cfg, con, stocks, funds, style
+        )
+    )
+
+
+def cmd_signals_outcome(cfg, con, src, args=None):
+    """结算到期决策信号的前向收益与胜负结果。"""
+    force = args is not None and getattr(args, "force", False)
+    res = decision_signals.evaluate_due_signals(cfg, con, force=force)
+    print(
+        "决策信号回溯: "
+        f"as_of={res['as_of']} 扫描{res['scanned']}条 "
+        f"结算{res['closed']}条 pending_data{res['pending_data']}条 "
+        f"unable{res['unable']}条"
+    )
+
+
+def cmd_signals_review(cfg, con, src, args=None):
+    """汇总决策信号 outcome 胜率。"""
+    window = int(getattr(args, "window", None) or 90)
+    source = getattr(args, "source", None)
+    journal = decision_signals.open_decision_journal(cfg, con)
+    print(decision_signals.render_review(
+        journal.review(window_days=window, source=source), window, source
+    ))
 
 
 def cmd_backtest(cfg, con, src, args=None):
@@ -596,6 +642,8 @@ CMDS = {
     "backtest": cmd_backtest,
     "backtest-short": cmd_backtest_short,
     "recommend": cmd_recommend,
+    "signals-outcome": cmd_signals_outcome,
+    "signals-review": cmd_signals_review,
     "pf": cmd_pf,
     "risk": cmd_risk,
     "rebalance": cmd_rebalance,
@@ -634,7 +682,8 @@ def main():
     p.add_argument("--style", choices=["momentum", "value", "leader", "reversal"], default=None,
                    help="for `recommend`: 'momentum'(强势股) / 'value'(稳健·价值版) / 'leader'(自上而下·龙头版) / 'reversal'(反转·超跌版); for `backtest` 同样支持 reversal")
     p.add_argument("--force", action="store_true",
-                   help="for `value-backfill`: re-pull valuation even if already fresh")
+                   help="for `value-backfill`: re-pull valuation even if already fresh; "
+                        "for `signals-outcome`: recompute closed signals")
     p.add_argument("--full", action="store_true",
                    help="for `value-backfill`: backfill valuation for the FULL main board "
                         "(~hours) instead of just 沪深300 (quality is always full-board)")
@@ -644,13 +693,17 @@ def main():
                    help="for `backfill-min`: 逗号分隔的6位个股代码; 不传则用持仓+config watchlist")
     p.add_argument("--start", default=None, help="for `backfill-min`: 起始日 YYYYMMDD")
     p.add_argument("--end", default=None, help="for `backfill-min`: 结束日 YYYYMMDD (默认今天)")
+    p.add_argument("--window", type=int, default=90,
+                   help="for `signals-review`: review window days (default 90)")
+    p.add_argument("--source", choices=["recommend", "premarket", "endday", "pf"], default=None,
+                   help="for `signals-review`: filter signal source")
     args = p.parse_args()
 
     cfg = load(args.config)
     db_path = resolve_path(cfg, "warehouse")
     # read-only commands can run alongside an open dashboard; write commands need
     # exclusive access — give a friendly hint instead of a lock stack trace.
-    read_only_cmds = {"ui", "query", "today", "live", "backtest", "backtest-short", "risk", "rebalance", "alerts", "premarket", "endday", "stock"}
+    read_only_cmds = {"ui", "query", "today", "live", "backtest", "backtest-short", "risk", "rebalance", "alerts", "premarket", "endday", "stock", "signals-outcome", "signals-review"}
     ro = args.cmd in read_only_cmds
     try:
         con = open_db(db_path, read_only=ro)

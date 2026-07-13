@@ -681,6 +681,12 @@ Bull researcher 找看多理由，Bear researcher 找看空理由，第三个 Ju
 - ✅ **Phase 1.3 估值分位**：`valuation_daily` 表 + `ingest/valuation.py`(个股百度PE/PB、指数乐咕滚动PE、宽基基金按跟踪指数) + `factors/valuation.py`(PE/PB 近5年分位,负PE诚实不打分) → 健康分/温度计新增"估值·PE分位"因子(±0.12)；`cli valuation` 回填、`cli pf` 自动 top-up
 - ✅ **Phase 3.2 个股/板块推荐**：`signals/stock_scorer.recommend_stocks`(沪深300主板成分为universe, 两段式:趋势预筛→估值精排, 同一可审计rubric) + `signals/sector_rank.recommend_sectors`(东财行业板块趋势打分, 源断连时诚实留空)。`cli recommend [--top N]` 出≥5主板个股(带逐因子拆解)+板块。沪深300主板成分 bars 已回填(data/csi300_main.json)
 - ✅ **并发修复**：看板 DuckDB 改 read_only(`open_db(read_only=)`); CLI 写命令遇锁给友好提示(`ui`占锁时); 只读命令(ui/query/today/live)可与看板并存
+
+**已完成（增量, 2026-07-13）：**
+- ✅ **决策信号闭环**：`recommend` / `premarket` / `endday` / `pf` 统一留痕，按交易日周期结算前向收益与相对沪深300超额，支持分来源复盘。
+- ✅ **DuckDB + SQLite 混合存储**：行情与因子保留在 DuckDB；小事务决策日志迁移到 SQLite WAL，短线任务和结算任务可与只读看板并行。详见 `docs/DECISION_STORAGE.md`。
+- ✅ **可重试状态**：到期但行情暂缺的信号标记为 `pending_data`，补齐数据后自动结算；重复记录不会重新打开 `closed` 信号。
+- ✅ **TDD 验证**：覆盖日志幂等、旧数据迁移、价格/交易日接口、四类记录入口、到期重试、CLI 并发和 Tushare 自定义端点。
 - ⏳ 待补：Phase1.1 复权因子、Phase1.8 调度、Phase2 因子IC评估、Phase5 回测、Phase6 LLM 分析师
 
 **下一步推荐起手姿势：**

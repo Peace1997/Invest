@@ -347,44 +347,6 @@ CREATE TABLE IF NOT EXISTS analysis_context_snapshot (
 CREATE INDEX IF NOT EXISTS idx_context_snapshot_task_time
     ON analysis_context_snapshot(task_type, created_at);
 
--- 决策信号留痕: recommend/premarket/endday/pf 在产出末端 best-effort 写入。
--- signal_id = sha1(trade_date|source|style|symbol|horizon_days) 前16位, 保证同日同源同标的幂等。
-CREATE TABLE IF NOT EXISTS decision_signal (
-    signal_id    VARCHAR PRIMARY KEY,
-    created_at   TIMESTAMP,
-    trade_date   DATE,
-    source       VARCHAR,
-    style        VARCHAR,
-    symbol       VARCHAR,
-    name         VARCHAR,
-    asset_type   VARCHAR,
-    action       VARCHAR,
-    score        DOUBLE,
-    ref_price    DOUBLE,
-    horizon_days INTEGER,
-    factors      VARCHAR,
-    rationale    VARCHAR,
-    status       VARCHAR
-);
-CREATE INDEX IF NOT EXISTS idx_decision_signal_status ON decision_signal(status, trade_date);
-CREATE INDEX IF NOT EXISTS idx_decision_signal_source ON decision_signal(source, trade_date);
-
--- 决策信号 outcome 回溯: 一条可评估信号对应一条收益结果。
-CREATE TABLE IF NOT EXISTS decision_outcome (
-    signal_id        VARCHAR PRIMARY KEY,
-    evaluated_at     TIMESTAMP,
-    end_date         DATE,
-    bars_forward     INTEGER,
-    ref_price        DOUBLE,
-    end_price        DOUBLE,
-    fwd_return_pct   DOUBLE,
-    bench_return_pct DOUBLE,
-    excess_pct       DOUBLE,
-    outcome          VARCHAR,
-    note             VARCHAR
-);
-CREATE INDEX IF NOT EXISTS idx_decision_outcome_outcome ON decision_outcome(outcome);
-
 -- 北向资金: aggregated by channel. channel in {'北向','沪股通','深股通'}
 CREATE TABLE IF NOT EXISTS northbound (
     trade_date     DATE    NOT NULL,
