@@ -90,7 +90,7 @@ class DecisionJournal:
                     ON decision_signal(source, trade_date);
 
                 CREATE TABLE IF NOT EXISTS decision_outcome (
-                    signal_id TEXT PRIMARY KEY,
+                    signal_id TEXT,
                     evaluated_at TIMESTAMP,
                     end_date DATE,
                     bars_forward INTEGER,
@@ -101,12 +101,14 @@ class DecisionJournal:
                     excess_pct REAL,
                     outcome TEXT,
                     note TEXT,
+                    PRIMARY KEY(signal_id, bars_forward),
                     FOREIGN KEY(signal_id) REFERENCES decision_signal(signal_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_decision_outcome_outcome
                     ON decision_outcome(outcome);
                 """
             )
+            self._upgrade_outcome_primary_key(con)
 
     def record_many(self, signals: list[DecisionSignal]) -> int:
         if not signals:
@@ -190,7 +192,8 @@ class DecisionJournal:
         with self._connect() as con:
             con.executemany(
                 f"INSERT INTO decision_outcome ({', '.join(_OUTCOME_COLUMNS)}) "
-                f"VALUES ({placeholders}) ON CONFLICT(signal_id) DO NOTHING",
+                f"VALUES ({placeholders}) "
+                "ON CONFLICT(signal_id, bars_forward) DO NOTHING",
                 rows,
             )
         return len(rows)
@@ -206,6 +209,88 @@ class DecisionJournal:
             )
         return written
 
+    def record_outcomes(self, outcomes: list[DecisionOutcome]) -> int:
+        """Record interim observations without closing their signals."""
+        if not outcomes:
+            return 0
+        with self._connect() as con:
+            return self._upsert_outcomes_on(con, outcomes)
+
+    def recorded_horizons(self) -> dict[str, set[int]]:
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT signal_id, bars_forward FROM decision_outcome"
+            ).fetchall()
+        result: dict[str, set[int]] = {}
+        for row in rows:
+            result.setdefault(row["signal_id"], set()).add(int(row["bars_forward"]))
+        return result
+
+    def review_details(
+        self,
+        window_days: int,
+        source: str | None = None,
+        status: str | None = None,
+        as_of: date | None = None,
+    ) -> list[dict]:
+        cutoff = (as_of or date.today()) - timedelta(days=window_days)
+        where = ["s.trade_date >= ?"]
+        params: list[object] = [_to_sql(cutoff)]
+        if source:
+            where.append("s.source = ?")
+            params.append(source)
+        if status:
+            where.append("s.status = ?")
+            params.append(status)
+        with self._connect() as con:
+            rows = con.execute(
+                f"""
+                SELECT
+                    s.signal_id, s.trade_date, s.source, s.style, s.symbol,
+                    s.name, s.action, s.rationale, s.status,
+                    o.end_date, o.bars_forward, o.fwd_return_pct,
+                    o.excess_pct, o.outcome
+                FROM decision_signal s
+                LEFT JOIN decision_outcome o ON o.signal_id=s.signal_id
+                WHERE {' AND '.join(where)}
+                ORDER BY s.trade_date DESC, s.source, s.symbol, o.bars_forward
+                """,
+                params,
+            ).fetchall()
+
+        details: dict[str, dict] = {}
+        for row in rows:
+            signal_id = row["signal_id"]
+            detail = details.setdefault(signal_id, {
+                "signal_id": signal_id,
+                "trade_date": date.fromisoformat(row["trade_date"]),
+                "source": row["source"],
+                "style": row["style"],
+                "symbol": row["symbol"],
+                "name": row["name"],
+                "action": row["action"],
+                "rationale": row["rationale"],
+                "status": row["status"],
+                "verdict": "待观察",
+                "outcomes": {},
+            })
+            if row["bars_forward"] is None:
+                continue
+            bars_forward = int(row["bars_forward"])
+            outcome = row["outcome"]
+            detail["outcomes"][bars_forward] = {
+                "end_date": date.fromisoformat(row["end_date"]),
+                "fwd_return_pct": row["fwd_return_pct"],
+                "excess_pct": row["excess_pct"],
+                "outcome": outcome,
+            }
+            detail["verdict"] = {
+                "hit": "有效",
+                "miss": "失效",
+                "neutral": "待观察",
+            }.get(outcome, "待观察")
+        return list(details.values())
+
     def mark_status(self, signal_id: str, status: SignalStatus) -> None:
         with self._connect() as con:
             con.execute(
@@ -217,6 +302,8 @@ class DecisionJournal:
         self,
         window_days: int,
         source: str | None = None,
+        horizon_days: int | None = None,
+        status: str | None = None,
         as_of: date | None = None,
     ) -> list[dict]:
         cutoff = (as_of or date.today()) - timedelta(days=window_days)
@@ -225,6 +312,12 @@ class DecisionJournal:
         if source:
             where += " AND s.source = ?"
             params.append(source)
+        if horizon_days is not None:
+            where += " AND o.bars_forward = ?"
+            params.append(int(horizon_days))
+        if status:
+            where += " AND s.status = ?"
+            params.append(status)
         with self._connect() as con:
             rows = con.execute(
                 f"""
@@ -272,7 +365,8 @@ class DecisionJournal:
         )
         sql = (
             f"INSERT INTO decision_outcome ({', '.join(_OUTCOME_COLUMNS)}) "
-            f"VALUES ({placeholders}) ON CONFLICT(signal_id) DO UPDATE SET {updates}"
+            f"VALUES ({placeholders}) "
+            f"ON CONFLICT(signal_id, bars_forward) DO UPDATE SET {updates}"
         )
         rows = [
             tuple(_to_sql(outcome.get(column)) for column in _OUTCOME_COLUMNS)
@@ -280,6 +374,47 @@ class DecisionJournal:
         ]
         con.executemany(sql, rows)
         return len(rows)
+
+    @staticmethod
+    def _upgrade_outcome_primary_key(con: sqlite3.Connection) -> None:
+        columns = con.execute("PRAGMA table_info(decision_outcome)").fetchall()
+        primary_key = [row[1] for row in columns if row[5]]
+        if primary_key == ["signal_id", "bars_forward"]:
+            return
+        con.executescript(
+            """
+            DROP INDEX IF EXISTS idx_decision_outcome_outcome;
+            ALTER TABLE decision_outcome RENAME TO decision_outcome_single;
+            CREATE TABLE decision_outcome (
+                signal_id TEXT,
+                evaluated_at TIMESTAMP,
+                end_date DATE,
+                bars_forward INTEGER,
+                ref_price REAL,
+                end_price REAL,
+                fwd_return_pct REAL,
+                bench_return_pct REAL,
+                excess_pct REAL,
+                outcome TEXT,
+                note TEXT,
+                PRIMARY KEY(signal_id, bars_forward),
+                FOREIGN KEY(signal_id) REFERENCES decision_signal(signal_id)
+            );
+            INSERT INTO decision_outcome (
+                signal_id, evaluated_at, end_date, bars_forward, ref_price,
+                end_price, fwd_return_pct, bench_return_pct, excess_pct,
+                outcome, note
+            )
+            SELECT
+                signal_id, evaluated_at, end_date, bars_forward, ref_price,
+                end_price, fwd_return_pct, bench_return_pct, excess_pct,
+                outcome, note
+            FROM decision_outcome_single;
+            DROP TABLE decision_outcome_single;
+            CREATE INDEX idx_decision_outcome_outcome
+                ON decision_outcome(outcome);
+            """
+        )
 
     @staticmethod
     def _legacy_rows(con, table: str, columns: tuple[str, ...]) -> list[dict]:

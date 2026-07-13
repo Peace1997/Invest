@@ -37,6 +37,8 @@ from ashare.rebalance import rebalance_plan, render_rebalance
 from ashare.ingest.news import ingest_news
 from ashare.ingest.market_state import ingest_market_breadth, latest_market_breadth
 from ashare.signals.sentiment import generate_sentiment, latest_sentiment, sentiment_history
+from ashare.decision_signals import evaluate_due_signals
+from ashare.repositories import DecisionJournal, MarketWarehouse
 
 st.set_page_config(
     page_title="Invest · 市场情报",
@@ -1806,7 +1808,7 @@ def page_sentiment():
 
     view = st.segmented_control(
         "工作区",
-        ["市场概览", "资讯监控", "资金与龙虎榜", "数据状态"],
+        ["市场概览", "资讯监控", "资金与龙虎榜", "决策复盘", "数据状态"],
         default="市场概览",
         required=True,
         key="market_workspace",
@@ -1894,8 +1896,12 @@ def page_sentiment():
         _render_news_feed(news, news_date)
     elif view == "资金与龙虎榜":
         _capital_flow_panel()
+    elif view == "决策复盘":
+        _render_decision_review(con)
     else:
         st.markdown("### 数据状态")
+        _render_market_quality_panel(con)
+        st.divider()
         _render_news_quality_panel(today_news, current_sent)
         st.markdown("#### 数据资产")
         _render_data_inventory(con)
@@ -1903,6 +1909,158 @@ def page_sentiment():
         st.markdown("### AI 运行配置")
         _render_llm_config_card()
         _render_ai_input_sample(news)
+
+
+def _decision_journal() -> DecisionJournal:
+    return DecisionJournal(resolve_path(get_cfg(), "decision_journal"))
+
+
+def _render_decision_review(con):
+    st.markdown("### 决策复盘")
+    st.caption("跟踪每条决策在 T+1 / T+5 / T+20 的绝对收益和相对沪深300超额；最长已完成周期决定当前判定。")
+
+    controls = st.columns([0.18, 0.22, 0.22, 0.2, 0.18], vertical_alignment="bottom")
+    with controls[0]:
+        window = st.selectbox(
+            "复盘窗口", [30, 90, 180, 365], index=1,
+            format_func=lambda value: f"近 {value} 天",
+        )
+    with controls[1]:
+        source_label = st.selectbox(
+            "信号来源", ["全部", "推荐", "开盘", "尾盘", "持仓"],
+        )
+    with controls[2]:
+        status_label = st.selectbox(
+            "信号状态", ["全部", "观察中", "待数据", "已完成", "无法评估"],
+        )
+    with controls[4]:
+        recalculate = st.button(
+            "重算历史结果", icon=":material/replay:", width="stretch",
+        )
+
+    source = {
+        "推荐": "recommend", "开盘": "premarket",
+        "尾盘": "endday", "持仓": "pf",
+    }.get(source_label)
+    status = {
+        "观察中": "active", "待数据": "pending_data",
+        "已完成": "closed", "无法评估": "unable",
+    }.get(status_label)
+    journal = _decision_journal()
+
+    if recalculate:
+        with st.spinner("按当前行情重算历史观察结果…"):
+            result = evaluate_due_signals(
+                get_cfg(), con, force=True, journal=journal
+            )
+        st.success(
+            f"已扫描 {result['scanned']} 条决策，更新 {result['evaluated']} 个周期结果，"
+            f"完成 {result['closed']} 条；"
+            f"等待数据 {result['pending_data']} 个。"
+        )
+
+    details = journal.review_details(
+        window, source=source, status=status,
+    )
+    evaluated = [row for row in details if row["outcomes"]]
+    effective = sum(row["verdict"] == "有效" for row in evaluated)
+    invalid = sum(row["verdict"] == "失效" for row in evaluated)
+    metrics = st.columns(4)
+    metrics[0].metric("决策样本", len(details))
+    metrics[1].metric("已有结果", len(evaluated))
+    metrics[2].metric("当前有效", effective)
+    decided = effective + invalid
+    metrics[3].metric(
+        "有效率",
+        f"{effective / decided * 100:.1f}%" if decided else "—",
+        help="只统计当前判定为有效或失效的样本；中性结果不进入分母。",
+    )
+
+    summary_rows = []
+    for horizon in (1, 5, 20):
+        for row in journal.review(
+            window, source=source, horizon_days=horizon, status=status,
+        ):
+            summary_rows.append({
+                "周期": f"T+{horizon}",
+                "信号组": row["group"],
+                "样本": row["sample_count"],
+                "命中率%": round(row["hit_rate_pct"], 1),
+                "平均收益%": round(row["avg_fwd_return_pct"], 2),
+                "平均超额%": round(row["avg_excess_pct"], 2),
+            })
+    if summary_rows:
+        st.markdown("#### 分组表现")
+        st.dataframe(
+            pd.DataFrame(summary_rows).style.map(
+                _color, subset=["平均收益%", "平均超额%"]
+            ),
+            width="stretch", hide_index=True,
+        )
+
+    st.markdown("#### 决策明细")
+    if not details:
+        st.info("当前筛选条件下暂无决策记录。")
+        return
+    detail_rows = []
+    for row in details:
+        values = {}
+        for horizon in (1, 5, 20):
+            outcome = row["outcomes"].get(horizon)
+            values[f"T+{horizon}收益%"] = (
+                round(outcome["fwd_return_pct"], 2) if outcome else None
+            )
+            values[f"T+{horizon}超额%"] = (
+                round(outcome["excess_pct"], 2) if outcome else None
+            )
+        detail_rows.append({
+            "日期": row["trade_date"],
+            "来源": row["source"],
+            "策略": row["style"] or "—",
+            "代码": row["symbol"],
+            "名称": row["name"] or "—",
+            "动作": row["action"],
+            "当前判定": row["verdict"],
+            **values,
+            "理由": row["rationale"] or "—",
+            "状态": row["status"],
+        })
+    numeric_columns = [
+        f"T+{horizon}{kind}%"
+        for horizon in (1, 5, 20)
+        for kind in ("收益", "超额")
+    ]
+    st.dataframe(
+        pd.DataFrame(detail_rows).style.map(_color, subset=numeric_columns),
+        width="stretch", hide_index=True,
+    )
+
+
+def _render_market_quality_panel(con):
+    st.markdown("#### 核心数据质量")
+    report = MarketWarehouse(con).quality_report(date.today())
+    counts = {
+        status: sum(row["status"] == status for row in report)
+        for status in ("正常", "警告", "异常")
+    }
+    cards = st.columns(3)
+    cards[0].metric("正常", counts["正常"])
+    cards[1].metric("警告", counts["警告"])
+    cards[2].metric("异常", counts["异常"])
+    rows = [{
+        "状态": row["status"],
+        "数据集": row["dataset"],
+        "最新日期": row["latest_date"] or "—",
+        "应到日期": row["expected_date"] or "—",
+        "交易日延迟": row["lag_trading_days"] if row["lag_trading_days"] is not None else "—",
+        "最新行数": row["latest_rows"],
+        "覆盖率%": row["coverage_pct"] if row["coverage_pct"] is not None else "—",
+        "空值": row["null_count"],
+        "重复键": row["duplicate_count"],
+        "多源冲突": row["source_conflict_count"],
+    } for row in report]
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+    st.caption("场外基金净值允许 T+1；估值多源数值不一致显示为警告；缺表、关键值缺失或重复键显示为异常。")
 
 
 @st.fragment(run_every=MONITOR_INTERVAL)

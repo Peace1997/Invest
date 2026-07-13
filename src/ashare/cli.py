@@ -402,7 +402,8 @@ def cmd_signals_outcome(cfg, con, src, args=None):
     print(
         "决策信号回溯: "
         f"as_of={res['as_of']} 扫描{res['scanned']}条 "
-        f"结算{res['closed']}条 pending_data{res['pending_data']}条 "
+        f"更新{res['evaluated']}个周期 结算{res['closed']}条 "
+        f"pending_data{res['pending_data']}条 "
         f"unable{res['unable']}条"
     )
 

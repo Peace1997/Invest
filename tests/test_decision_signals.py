@@ -19,6 +19,78 @@ from tests.decision_fixtures import decision_signal
 
 
 class DecisionSignalEvaluationTest(unittest.TestCase):
+    def test_evaluation_records_each_due_review_horizon_before_strategy_closes(self):
+        market = duckdb.connect(":memory:")
+        market.execute(
+            """
+            CREATE TABLE calendar (trade_date DATE);
+            INSERT INTO calendar VALUES
+                (DATE '2026-07-01'), (DATE '2026-07-02'),
+                (DATE '2026-07-03'), (DATE '2026-07-06'),
+                (DATE '2026-07-07'), (DATE '2026-07-08');
+            CREATE TABLE daily_bar_adj (symbol VARCHAR, trade_date DATE, close DOUBLE);
+            INSERT INTO daily_bar_adj VALUES
+                ('000001', DATE '2026-07-01', 10.0),
+                ('000001', DATE '2026-07-02', 10.2),
+                ('000001', DATE '2026-07-03', 10.3),
+                ('000001', DATE '2026-07-06', 10.4),
+                ('000001', DATE '2026-07-07', 10.5),
+                ('000001', DATE '2026-07-08', 11.0);
+            CREATE TABLE index_bar (symbol VARCHAR, trade_date DATE, close DOUBLE);
+            INSERT INTO index_bar VALUES
+                ('000300', DATE '2026-07-01', 4000.0),
+                ('000300', DATE '2026-07-02', 4000.0),
+                ('000300', DATE '2026-07-03', 4000.0),
+                ('000300', DATE '2026-07-06', 4000.0),
+                ('000300', DATE '2026-07-07', 4000.0),
+                ('000300', DATE '2026-07-08', 4000.0);
+            CREATE TABLE fund_nav (symbol VARCHAR, nav_date DATE, nav DOUBLE);
+            """
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = DecisionJournal(Path(tmp) / "decisions.sqlite3")
+            journal.record_many([
+                decision_signal(
+                    signal_id="long-1",
+                    trade_date=date(2026, 7, 1),
+                    horizon_days=20,
+                    ref_price=10.0,
+                ),
+                decision_signal(
+                    signal_id="short-1",
+                    trade_date=date(2026, 7, 1),
+                    horizon_days=1,
+                    ref_price=10.0,
+                ),
+            ])
+            cfg = {
+                "decision_signal": {
+                    "hit_excess_pct": 1.0,
+                    "review_horizons": [1, 5, 20],
+                }
+            }
+
+            first = evaluate_due_signals(
+                cfg, market, journal=journal, as_of=date(2026, 7, 2)
+            )
+            result = evaluate_due_signals(
+                cfg, market, journal=journal, as_of=date(2026, 7, 8)
+            )
+
+            self.assertEqual(first["evaluated"], 2)
+            self.assertEqual(first["closed"], 1)
+            self.assertEqual(result["evaluated"], 2)
+            self.assertEqual(result["closed"], 0)
+            details = {
+                row["signal_id"]: row
+                for row in journal.review_details(90, as_of=date(2026, 7, 8))
+            }
+            self.assertEqual(set(details["long-1"]["outcomes"]), {1, 5})
+            self.assertEqual(details["long-1"]["status"], "active")
+            self.assertEqual(set(details["short-1"]["outcomes"]), {1, 5})
+            self.assertEqual(details["short-1"]["status"], "closed")
+        market.close()
+
     def test_recommendation_and_portfolio_paths_share_the_sqlite_journal(self):
         market = duckdb.connect(":memory:")
         market.execute(
@@ -178,6 +250,7 @@ class DecisionSignalEvaluationTest(unittest.TestCase):
 
             self.assertEqual(first, {
                 "scanned": 1,
+                "evaluated": 0,
                 "closed": 0,
                 "pending_data": 1,
                 "unable": 0,

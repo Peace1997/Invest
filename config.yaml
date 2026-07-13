@@ -68,6 +68,7 @@ endday:
 # 决策信号留痕 + outcome 回溯。缺省也能跑；这里显式列出便于调整。
 decision_signal:
   enabled: true
+  review_horizons: [1, 5, 20]
   horizons:
     momentum: 60
     value: 60

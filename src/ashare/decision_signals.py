@@ -161,18 +161,30 @@ def evaluate_due_signals(
     journal = journal or open_decision_journal(cfg, con)
     market = MarketWarehouse(con)
     as_of = as_of or market.latest_trade_date(date.today()) or date.today()
-    threshold = float((cfg.get("decision_signal", {}) or {}).get("hit_excess_pct", 1.0))
-    candidates = journal.open_signals(include_closed=force)
-    due = [
-        signal for signal in candidates
-        if market.trading_days_elapsed(signal["trade_date"], as_of)
-        >= int(signal["horizon_days"])
-    ]
+    signal_cfg = cfg.get("decision_signal", {}) or {}
+    threshold = float(signal_cfg.get("hit_excess_pct", 1.0))
+    review_horizons = {
+        int(value)
+        for value in (signal_cfg.get("review_horizons", []) or [])
+        if int(value) > 0
+    }
+    candidates = journal.open_signals(
+        include_closed=force or bool(review_horizons)
+    )
+    recorded_horizons = journal.recorded_horizons()
 
-    outcomes = []
+    observations = []
+    settlements = []
+    scanned = 0
     pending_data = 0
     unable = 0
-    for s in due:
+    for s in candidates:
+        elapsed = market.trading_days_elapsed(s["trade_date"], as_of)
+        horizons = sorted(review_horizons | {int(s["horizon_days"])})
+        due_horizons = [horizon for horizon in horizons if horizon <= elapsed]
+        if not due_horizons:
+            continue
+        scanned += 1
         was_closed = s.get("status") == "closed"
         ref_price = _clean_float(s.get("ref_price"))
         if ref_price is None or ref_price <= 0:
@@ -181,46 +193,52 @@ def evaluate_due_signals(
             unable += 1
             continue
 
-        fwd = market.forward_close(
-            s["symbol"], s["asset_type"], s["trade_date"], int(s["horizon_days"])
-        )
-        if fwd is None:
-            if not was_closed:
-                journal.mark_status(s["signal_id"], "pending_data")
-            pending_data += 1
-            continue
-
-        end_date, end_price, bars_used = fwd
-        fwd_pct = (end_price / ref_price - 1.0) * 100
         b_ref = market.close_on_or_before("000300", "index", s["trade_date"])
-        b_end = market.forward_close(
-            "000300", "index", s["trade_date"], int(s["horizon_days"])
-        )
-        if not (b_ref and b_end and b_ref[1] > 0):
-            if not was_closed:
-                journal.mark_status(s["signal_id"], "pending_data")
-            pending_data += 1
-            continue
-        bench_pct = (b_end[1] / b_ref[1] - 1.0) * 100
-        excess = fwd_pct - bench_pct
-        outcome = _judge_outcome(str(s.get("action") or ""), fwd_pct, excess, threshold)
-        outcomes.append({
-            "signal_id": s["signal_id"],
-            "evaluated_at": datetime.now(),
-            "end_date": end_date,
-            "bars_forward": bars_used,
-            "ref_price": ref_price,
-            "end_price": end_price,
-            "fwd_return_pct": fwd_pct,
-            "bench_return_pct": bench_pct,
-            "excess_pct": excess,
-            "outcome": outcome,
-            "note": None,
-        })
-    written = journal.settle_many(outcomes)
+        for horizon in due_horizons:
+            if not force and horizon in recorded_horizons.get(s["signal_id"], set()):
+                continue
+            fwd = market.forward_close(
+                s["symbol"], s["asset_type"], s["trade_date"], horizon
+            )
+            b_end = market.forward_close(
+                "000300", "index", s["trade_date"], horizon
+            )
+            if not (fwd and b_ref and b_end and b_ref[1] > 0):
+                if not was_closed and horizon == int(s["horizon_days"]):
+                    journal.mark_status(s["signal_id"], "pending_data")
+                pending_data += 1
+                continue
+
+            end_date, end_price, bars_used = fwd
+            fwd_pct = (end_price / ref_price - 1.0) * 100
+            bench_pct = (b_end[1] / b_ref[1] - 1.0) * 100
+            excess = fwd_pct - bench_pct
+            outcome = _judge_outcome(
+                str(s.get("action") or ""), fwd_pct, excess, threshold
+            )
+            result = {
+                "signal_id": s["signal_id"],
+                "evaluated_at": datetime.now(),
+                "end_date": end_date,
+                "bars_forward": bars_used,
+                "ref_price": ref_price,
+                "end_price": end_price,
+                "fwd_return_pct": fwd_pct,
+                "bench_return_pct": bench_pct,
+                "excess_pct": excess,
+                "outcome": outcome,
+                "note": None,
+            }
+            if horizon == int(s["horizon_days"]):
+                settlements.append(result)
+            else:
+                observations.append(result)
+    observed = journal.record_outcomes(observations)
+    closed = journal.settle_many(settlements)
     return {
-        "scanned": len(due),
-        "closed": written,
+        "scanned": scanned,
+        "evaluated": observed + closed,
+        "closed": closed,
         "pending_data": pending_data,
         "unable": unable,
         "as_of": as_of,
