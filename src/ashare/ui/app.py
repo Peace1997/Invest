@@ -1594,6 +1594,20 @@ def _capital_watch_symbols(con=None) -> list[str]:
     return sorted(syms)
 
 
+def _format_lhb_rows(rows: pd.DataFrame) -> pd.DataFrame:
+    """Apply the shared display units and labels for LHB records."""
+    table = rows.copy()
+    table["龙虎净买(亿)"] = (table["net_buy"] / 1e8).round(2)
+    table["机构净买(亿)"] = (table["org_net_amt"] / 1e8).round(2)
+    return table.rename(columns={
+        "trade_date": "日期",
+        "symbol": "代码",
+        "name": "名称",
+        "pct_chg": "涨跌%",
+        "reason": "上榜原因",
+    })
+
+
 def _capital_flow_panel():
     """Dedicated money-flow and LHB workspace. All inputs are T+1 close data."""
     from ashare.ingest.fundflow import (
@@ -1730,14 +1744,9 @@ def _capital_flow_panel():
         st.caption("近10日自选与持仓没有龙虎榜记录。")
     else:
         st.markdown("#### 自选 / 持仓上榜")
-        show = hit.copy()
-        show["龙虎净买(亿)"] = (show["net_buy"] / 1e8).round(2)
-        show["机构净买(亿)"] = (show["org_net_amt"] / 1e8).round(2)
-        show = show[["trade_date", "symbol", "name", "pct_chg", "龙虎净买(亿)",
-                     "机构净买(亿)", "reason"]].rename(columns={
-                         "trade_date": "日期", "symbol": "代码", "name": "名称",
-                         "pct_chg": "涨跌%", "reason": "上榜原因",
-                     })
+        show = _format_lhb_rows(hit)[[
+            "日期", "代码", "名称", "涨跌%", "龙虎净买(亿)", "机构净买(亿)", "上榜原因",
+        ]]
         st.dataframe(
             show.style.map(_color, subset=["涨跌%", "龙虎净买(亿)", "机构净买(亿)"]),
             width="stretch",
@@ -1782,6 +1791,232 @@ def _capital_flow_panel():
     st.caption("龙虎榜、机构与营业部数据均为交易所 T+1 盘后口径，非实时成交信号。")
 
 
+def _render_focus_stock(con):
+    """Dedicated evidence workspace for 东方精工 (002611)."""
+    from ashare.focus_stock import (
+        conditional_forward_forecast,
+        generate_focus_commentary,
+    )
+    from ashare.factors.technical import trend_features
+    from ashare.ingest.fundflow import load_stock_flow_for
+    from ashare.ingest.lhb import load_lhb_for_symbols
+    from ashare.stockeval import evaluate_stock
+
+    code = "002611"
+    research_path = _SRC.parent / "docs" / "research" / "dongfang_jinggong_002611_2026-07-16.md"
+
+    st.markdown("### 东方精工 · 002611")
+    st.caption(
+        "单股研究工作区 · 行情/估值/财务/资金/龙虎榜/公告研究交叉验证 · "
+        "预测为历史条件分布，不是确定目标价"
+    )
+    st.warning(
+        "**估值口径已发生根本断裂：**公司于 2026-04-09 完成核心 Fosber 等业务出售，"
+        "被出售业务占 2025 年收入 67.34%。2026H1 归母利润中的约 37.99 亿元为一次性处置收益，"
+        "而扣非利润预告同比下降 60%~70%。下方历史分布只能视为技术反弹基准，"
+        "不能代表出售后的持续经营价值；高置信度基本面预测需等待半年报交割后资产负债表。",
+        icon="⚠️",
+    )
+
+    result = evaluate_stock(con, code, with_llm=False)
+    if not result.get("ok"):
+        st.error(result.get("error", "东方精工量化数据不可用"))
+        return
+    profile = result["profile"]
+    quote = profile["quote"] or {}
+    valuation = profile["val"]
+    quality = profile["qual"]
+    price = quote.get("price") or profile["close"]
+    pct = quote.get("pct_chg")
+    post_break = con.execute(
+        "SELECT b.close * COALESCE(f.adj_factor, 1) AS adj_close "
+        "FROM daily_bar b LEFT JOIN adj_factor f "
+        "  ON b.symbol=f.symbol AND b.trade_date=f.trade_date "
+        "WHERE b.symbol=? AND b.type='stock' AND b.trade_date>=DATE '2026-04-09' "
+        "ORDER BY b.trade_date",
+        [code],
+    ).df()
+    comparable_factors = trend_features(post_break["adj_close"])
+
+    metrics = st.columns(6)
+    metrics[0].metric(
+        "现价" if quote.get("price") is not None else "最新收盘",
+        f"{price:.2f}",
+        f"{pct:+.2f}%" if pct is not None else None,
+    )
+    metrics[1].metric(
+        "重组后趋势",
+        comparable_factors.trend_label if comparable_factors else "数据不足",
+        f"20日 {comparable_factors.ret20:+.1f}%"
+        if comparable_factors and comparable_factors.ret20 is not None else None,
+        delta_color="off",
+    )
+    metrics[2].metric(
+        "PE-TTM",
+        f"{valuation.pe_ttm:.1f}" if valuation and valuation.pe_ttm is not None else "—",
+        f"历史分位 {valuation.pe_pct:.0f}%"
+        if valuation and valuation.pe_pct is not None else "无有效分位",
+        delta_color="off",
+    )
+    metrics[3].metric(
+        "PB",
+        f"{valuation.pb:.2f}" if valuation and valuation.pb is not None else "—",
+        f"历史分位 {valuation.pb_pct:.0f}%"
+        if valuation and valuation.pb_pct is not None else "无有效分位",
+        delta_color="off",
+    )
+    metrics[4].metric(
+        "ROE",
+        f"{quality.roe:.1f}%" if quality and quality.roe is not None else "—",
+        f"归母净利同比 {quality.profit_yoy:+.1f}%"
+        if quality and quality.profit_yoy is not None else "无覆盖",
+        delta_color="off",
+    )
+    metrics[5].metric(
+        "重组后波动",
+        f"{comparable_factors.ann_vol:.1f}%"
+        if comparable_factors and comparable_factors.ann_vol is not None else "—",
+        f"距重组后高点 {comparable_factors.dd_from_high:+.1f}%"
+        if comparable_factors and comparable_factors.dd_from_high is not None else None,
+        delta_color="off",
+    )
+
+    valuation_date = valuation.as_of if valuation else None
+    quality_date = quality.report_date if quality else None
+    quote_time = quote.get("quote_time")
+    st.caption(
+        f"数据时点 · 日线 {profile['bar_date']} · 估值 {valuation_date or '无'} · "
+        f"财务报告期 {quality_date or '无'} · 实时行情 {quote_time or '未取到'}"
+    )
+
+    forecast = conditional_forward_forecast(con, code, regime_start="2026-04-09")
+    st.markdown("#### 概率情景预测")
+    if not forecast.get("ok"):
+        st.warning(forecast.get("error", "条件预测不可用"))
+        st.info(
+            "**当前判断（中低置信度）：基准情景。**短线仍处弱势修复阶段；中期方向取决于"
+            "半年报确认的交割后净现金、存续业务利润，以及机器人订单能否转化为收入与回款。"
+            "在结构重组后的可比样本积累到最低门槛前，不给出机械胜率和目标价。"
+        )
+    else:
+        regime = forecast["regime"]
+        st.info(
+            f"当前状态：**{regime['ma60_side']}** · 20日收益 "
+            f"**{regime['ret20']:+.2f}%**（{regime['momentum_bucket']}）。"
+        )
+        forecast_rows = []
+        for row in forecast["horizons"]:
+            lo = price * (1.0 + row["q25_return"] / 100.0)
+            mid = price * (1.0 + row["median_return"] / 100.0)
+            hi = price * (1.0 + row["q75_return"] / 100.0)
+            forecast_rows.append({
+                "周期": f"T+{row['horizon']}",
+                "判断": row["stance"],
+                "历史样本": row["samples"],
+                "上涨率": f"{row['win_rate']:.1f}%",
+                "中位收益": f"{row['median_return']:+.2f}%",
+                "25%~75%收益": f"{row['q25_return']:+.2f}% ~ {row['q75_return']:+.2f}%",
+                "按现价折算区间": f"{lo:.2f} ~ {hi:.2f}",
+                "中位价格": f"{mid:.2f}",
+                "匹配条件": row["condition"],
+            })
+        st.dataframe(pd.DataFrame(forecast_rows), width="stretch", hide_index=True)
+        st.caption(
+            "方法：仅使用 2026-04-09 重大资产出售完成后的可比数据，在相同 MA60 位置与"
+            "20日动量档中统计不重叠前向复权收益；"
+            "价格区间只是把历史分位机械折算到当前价，未纳入未来公告、停牌或极端事件。"
+        )
+
+    st.markdown("#### 量化打分与交易边界")
+    st.caption(
+        "现有三套模型及交易价位依赖出售前的长历史，估值和盈利分母也尚未重建，"
+        "因此保持停用；待半年报与重组后样本满足门槛再重新训练。"
+    )
+
+    chart_data = get_series(code, "stock")
+    if not chart_data.empty:
+        chart_data = chart_data[
+            pd.to_datetime(chart_data["trade_date"]) >= pd.Timestamp("2026-04-09")
+        ]
+        chart = price_chart("东方精工 · 日线", chart_data, 250)
+        st.plotly_chart(chart, width="stretch")
+
+    st.markdown("#### 资金流与龙虎榜")
+    flow = load_stock_flow_for(con, [code], days=10)
+    flow_col, lhb_col = st.columns(2)
+    with flow_col:
+        st.markdown("##### 近10日主力资金")
+        if flow.empty:
+            st.caption("暂无个股资金流数据。")
+        else:
+            flow = flow.sort_values("trade_date")
+            flow["主力净流入(亿)"] = flow["main_net"] / 1e8
+            flow["主力净占比%"] = flow["main_ratio"].round(2)
+            fig = go.Figure(go.Bar(
+                x=flow["trade_date"],
+                y=flow["主力净流入(亿)"],
+                marker_color=[UP if value >= 0 else DN for value in flow["主力净流入(亿)"].fillna(0)],
+            ))
+            fig.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10), yaxis_title="亿元")
+            st.plotly_chart(fig, width="stretch")
+            net = float(flow["main_net"].fillna(0).sum()) / 1e8
+            positive = int((flow["main_net"].fillna(0) > 0).sum())
+            st.caption(f"样本期累计主力净流入 {net:+.2f} 亿元 · 净流入 {positive}/{len(flow)} 天。")
+    with lhb_col:
+        st.markdown("##### 近30日龙虎榜")
+        lhb = load_lhb_for_symbols(con, [code], days=30)
+        if lhb.empty:
+            st.caption("近30日未发现东方精工上榜记录；这不是利空，只表示没有该类交易所异动记录。")
+        else:
+            table = _format_lhb_rows(lhb)
+            st.dataframe(
+                table[["日期", "涨跌%", "龙虎净买(亿)", "机构净买(亿)", "上榜原因"]],
+                width="stretch",
+                hide_index=True,
+            )
+
+    research_text = ""
+    st.markdown("#### 公司、公告、行业与风险研究")
+    if research_path.exists():
+        research_text = research_path.read_text(encoding="utf-8")
+        with st.expander("查看完整研究底稿（含一手来源）", expanded=True):
+            st.markdown(research_text)
+    else:
+        st.info("研究底稿正在生成；量化与交易数据已经可用。")
+
+    ret20_text = (
+        f"{comparable_factors.ret20:+.2f}%"
+        if comparable_factors and comparable_factors.ret20 is not None else "数据不足"
+    )
+    trend_text = comparable_factors.trend_label if comparable_factors else "数据不足"
+    quantitative_for_ai = (
+        f"数据截至 {profile['bar_date']}；现价/最新价 {price:.2f} 元；"
+        f"重组后20日收益 {ret20_text}；重组后技术趋势 {trend_text}。"
+        "2026-04-09前的模型打分、模型信心和交易价位均因公司结构变化停用；"
+        "不得提供旧口径胜率、目标价或价格区间。"
+    )
+    st.caption("出售前历史模型输出已隐藏，也不会传给 AI。")
+
+    if st.button("生成 AI 综合研判（费 token）", type="primary", key="focus_stock_llm"):
+        if not research_text:
+            st.warning("研究底稿尚未生成，暂不调用 AI，避免只根据价格做片面判断。")
+        else:
+            with st.spinner("综合量化数据与公告研究中…"):
+                try:
+                    commentary = generate_focus_commentary(
+                        quantitative_for_ai, forecast, research_text, get_cfg()
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    st.warning(f"AI 综合研判失败: {exc}")
+                else:
+                    if commentary:
+                        st.markdown("#### AI 综合研判")
+                        st.info(commentary)
+                        st.caption("AI 基于页面量化数据与带来源研究底稿生成；仍需人工核对公告原文。")
+                    else:
+                        st.warning("LLM 未配置密钥，或本次调用没有返回结果。")
+
+
 def page_sentiment():
     head = st.columns([0.52, 0.16, 0.16, 0.16], vertical_alignment="bottom")
     head[0].title("市场情报工作台")
@@ -1808,7 +2043,7 @@ def page_sentiment():
 
     view = st.segmented_control(
         "工作区",
-        ["市场概览", "资讯监控", "资金与龙虎榜", "决策复盘", "数据状态"],
+        ["市场概览", "东方精工", "资讯监控", "资金与龙虎榜", "决策复盘", "数据状态"],
         default="市场概览",
         required=True,
         key="market_workspace",
@@ -1887,6 +2122,8 @@ def page_sentiment():
 
     if view == "市场概览":
         _render_market_overview(news, current_sent, current_market)
+    elif view == "东方精工":
+        _render_focus_stock(con)
     elif view == "资讯监控":
         st.markdown("### 实时监控")
         _live_news_monitor()
