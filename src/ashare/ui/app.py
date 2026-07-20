@@ -2516,8 +2516,8 @@ def page_stockeval():
 
 def page_positions():
     st.markdown("### 我的仓位")
-    st.caption("查询股票/ETF后只填份额和成本即可加入；场外基金可手动输入。数据只保存在本机 positions.yaml。")
-    from ashare.portfolio import save_positions, search_instruments
+    st.caption("查询股票/ETF后只填份额和持仓总成本即可加入；成本价由系统计算。数据只保存在本机 positions.yaml。")
+    from ashare.portfolio import save_positions, search_instruments, unit_cost_from_total
 
     local_pf = load_position_overview()
     total = local_pf.total_market_value
@@ -2539,6 +2539,9 @@ def page_positions():
             "代码": h.code,
             "名称": h.name,
             "类型": h.type,
+            "份额/股数": h.shares,
+            "持仓成本(元)": round(h.cost_value, 2) if h.cost_value is not None else None,
+            "成本价(自动)": round(h.cost, 4) if h.cost else None,
             "市值(元)": round(h.market_value) if h.market_value is not None else None,
             "权重%": round(local_pf.weight(h), 1) if local_pf.weight(h) is not None else None,
             "浮盈%": round(h.pnl_pct, 1) if h.pnl_pct is not None else None,
@@ -2594,10 +2597,10 @@ def page_positions():
             value=float(existing.shares) if existing else 0.0,
             key=f"quick_shares_{code or mode}",
         )
-        cost = inputs[1].number_input(
-            "成本价", min_value=0.0, step=0.01, format="%.4f",
-            value=float(existing.cost) if existing else 0.0,
-            key=f"quick_cost_{code or mode}",
+        holding_cost = inputs[1].number_input(
+            "持仓总成本(元)", min_value=0.0, step=100.0, format="%.2f",
+            value=float(existing.cost_value or 0) if existing else 0.0,
+            key=f"quick_total_cost_{code or mode}",
         )
         quick_save = st.form_submit_button(
             "加入或更新持仓", type="primary", width="stretch",
@@ -2605,17 +2608,19 @@ def page_positions():
         )
 
     if quick_save:
-        current_rows = [
-            {"code": h.code, "name": h.name, "type": h.type,
-             "shares": h.shares, "cost": h.cost}
-            for h in local_pf.holdings
-        ]
-        new_row = {"code": code, "name": name, "type": kind, "shares": shares, "cost": cost}
-        if any(row["code"] == code for row in current_rows):
-            current_rows = [new_row if row["code"] == code else row for row in current_rows]
-        else:
-            current_rows.append(new_row)
         try:
+            cost = unit_cost_from_total(holding_cost, shares)
+            current_rows = [
+                {"code": h.code, "name": h.name, "type": h.type,
+                 "shares": h.shares, "cost": h.cost}
+                for h in local_pf.holdings
+            ]
+            new_row = {"code": code, "name": name, "type": kind,
+                       "shares": shares, "cost": cost}
+            if any(row["code"] == code for row in current_rows):
+                current_rows = [new_row if row["code"] == code else row for row in current_rows]
+            else:
+                current_rows.append(new_row)
             save_positions(current_rows, local_pf.cash)
         except ValueError as e:
             st.error(f"保存失败：{e}")
@@ -2626,27 +2631,45 @@ def page_positions():
 
     st.divider()
     st.markdown("#### 编辑全部持仓")
-    st.caption("可直接修改、增行或删除；保存后会覆盖上面的持仓列表。")
-    rows = [{"code": h.code, "name": h.name, "type": h.type,
-             "shares": float(h.shares), "cost": float(h.cost)} for h in local_pf.holdings]
-    df = pd.DataFrame(rows, columns=["code", "name", "type", "shares", "cost"])
+    st.caption("只需维护份额和持仓总成本；成本价保存后自动计算。也可直接增行或删除。")
+    rows = [
+        {"code": h.code, "name": h.name, "type": h.type, "shares": float(h.shares),
+         "total_cost": float(h.cost_value or 0), "unit_cost": float(h.cost)}
+        for h in local_pf.holdings
+    ]
+    df = pd.DataFrame(
+        rows, columns=["code", "name", "type", "shares", "total_cost", "unit_cost"])
     edited = st.data_editor(
         df, num_rows="dynamic", width="stretch", key="pos_editor",
+        disabled=["unit_cost"],
         column_config={
             "code": st.column_config.TextColumn("代码", help="6位数字代码", max_chars=6, required=True),
             "name": st.column_config.TextColumn("名称", help="自己看的, 随便写"),
             "type": st.column_config.SelectboxColumn(
                 "类型", options=["etf", "stock", "otc_fund", "bond_fund"], required=True),
             "shares": st.column_config.NumberColumn("份额/股数", min_value=0.0, format="%.2f"),
-            "cost": st.column_config.NumberColumn("成本价", min_value=0.0, format="%.4f",
-                                                  help="每股/每份成本; 不知道填0则只算权重不算盈亏"),
+            "total_cost": st.column_config.NumberColumn(
+                "持仓总成本(元)", min_value=0.0, format="%.2f",
+                help="当前剩余份额对应的总成本；不知道可填0"),
+            "unit_cost": st.column_config.NumberColumn(
+                "成本价(自动)", min_value=0.0, format="%.4f"),
         })
     cash = st.number_input("现金仓位(元, 计入总资产算权重)", min_value=0.0,
                            value=float(local_pf.cash), step=100.0)
     c1, c2 = st.columns([0.18, 0.82])
     if c1.button("💾 保存", type="primary", width="stretch"):
         try:
-            save_positions(edited.to_dict("records"), cash)
+            storage_rows = []
+            for row in edited.to_dict("records"):
+                shares_value = 0.0 if pd.isna(row.get("shares")) else float(row.get("shares") or 0)
+                total_cost_value = (0.0 if pd.isna(row.get("total_cost"))
+                                    else float(row.get("total_cost") or 0))
+                storage_rows.append({
+                    "code": row.get("code"), "name": row.get("name"), "type": row.get("type"),
+                    "shares": shares_value,
+                    "cost": unit_cost_from_total(total_cost_value, shares_value),
+                })
+            save_positions(storage_rows, cash)
         except ValueError as e:
             st.error(f"保存失败: {e}")
         else:

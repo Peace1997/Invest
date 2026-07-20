@@ -20,6 +20,14 @@ _ON_EXCHANGE = {"etf", "stock"}
 _OTC = {"otc_fund", "bond_fund"}
 
 
+def unit_cost_from_total(total_cost: float, shares: float) -> float:
+    """Convert a holding's total cost and quantity to its per-unit cost."""
+    total, quantity = float(total_cost), float(shares)
+    if total and quantity <= 0:
+        raise ValueError("填写持仓成本时，份额必须大于0")
+    return total / quantity if quantity else 0.0
+
+
 def search_instruments(con, query: str, limit: int = 10) -> list[dict]:
     """Find locally known stocks and ETFs by code or name."""
     text = str(query or "").strip()
