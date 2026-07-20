@@ -34,6 +34,18 @@ def _market_with_prices(prices: list[float]):
 
 
 class FocusStockForecastTest(unittest.TestCase):
+    def test_previous_focus_research_loader_remains_importable_during_hot_reload(self):
+        from ashare.focus_stock import latest_focus_stock_research
+
+        with TemporaryDirectory() as tmp:
+            research_dir = Path(tmp)
+            expected = research_dir / "dongfang_jinggong_002611_2026-07-20.md"
+            expected.write_text("兼容底稿", encoding="utf-8")
+
+            document = latest_focus_stock_research(research_dir)
+
+            self.assertEqual(document["path"], expected)
+
     def test_latest_research_document_uses_newest_dated_report(self):
         with TemporaryDirectory() as tmp:
             research_dir = Path(tmp)

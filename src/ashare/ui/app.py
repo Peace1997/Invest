@@ -611,7 +611,11 @@ def _ai_summary_needs_refresh(news: pd.DataFrame, sent: dict | None, cfg: dict) 
     return False, "AI 总结仍在有效样本范围内"
 
 
-def _refresh_page_inputs(force: bool = False, force_ai: bool = False) -> dict:
+def _refresh_page_inputs(
+    force: bool = False,
+    force_ai: bool = False,
+    allow_ai: bool = True,
+) -> dict:
     """Refresh data that the sentiment page depends on before rendering."""
     con, ak, cfg = get_con(), get_ak(), get_cfg()
     init_schema(con)
@@ -636,7 +640,7 @@ def _refresh_page_inputs(force: bool = False, force_ai: bool = False) -> dict:
     needs_ai, reason = _ai_summary_needs_refresh(news, sent, cfg)
     last_ai = st.session_state.get("sentiment_auto_refresh_at")
     ai_cooldown_ok = not last_ai or now - last_ai >= AI_AUTO_REFRESH_INTERVAL
-    if force_ai or (needs_ai and ai_cooldown_ok):
+    if force_ai or (allow_ai and needs_ai and ai_cooldown_ok):
         refresh = _refresh_sentiment_now(force=True)
         st.session_state["sentiment_auto_refresh_at"] = datetime.now()
         info["ai"] = refresh
@@ -1802,6 +1806,7 @@ def _capital_flow_panel():
 def _render_focus_stock(con):
     """Dedicated evidence workspace for 东方精工 (002611)."""
     from ashare.focus_stock import (
+        FOCUS_STOCK_CODE,
         conditional_forward_forecast,
         focus_stock_data_status,
         generate_focus_commentary,
@@ -1813,7 +1818,7 @@ def _render_focus_stock(con):
     from ashare.ingest.lhb import load_lhb_for_symbols
     from ashare.stockeval import evaluate_stock
 
-    code = "002611"
+    code = FOCUS_STOCK_CODE
     research_document = latest_stock_research(_SRC.parent / "docs" / "research", code)
 
     st.markdown("### 东方精工 · 002611")
@@ -2138,7 +2143,7 @@ def page_sentiment():
             st.rerun()
 
     if view in ("市场概览", "资讯监控"):
-        info = _refresh_page_inputs()
+        info = _refresh_page_inputs(allow_ai=view == "市场概览")
         if info.get("news_error"):
             st.warning(f"新闻自动刷新失败: {info['news_error']}")
         if info.get("market_error"):
@@ -2175,6 +2180,8 @@ def page_sentiment():
         _render_focus_stock(con)
     elif view == "资讯监控":
         st.markdown("### 实时监控")
+        _render_sentiment_overview(news, current_sent, current_market)
+        st.divider()
         _live_news_monitor()
         st.divider()
         _render_attention_queues(news)

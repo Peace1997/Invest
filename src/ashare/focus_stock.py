@@ -15,6 +15,8 @@ import pandas as pd
 
 from .llm import NoKeyError, complete
 
+FOCUS_STOCK_CODE = "002611"
+
 
 def latest_stock_research(research_dir: Path, code: str) -> dict | None:
     """Load the newest dated research document for a stock code."""
@@ -35,6 +37,11 @@ def latest_stock_research(research_dir: Path, code: str) -> dict | None:
         "research_date": research_date,
         "text": path.read_text(encoding="utf-8"),
     }
+
+
+def latest_focus_stock_research(research_dir: Path) -> dict | None:
+    """Compatibility entry point for dashboard processes hot-reloading old code."""
+    return latest_stock_research(research_dir, FOCUS_STOCK_CODE)
 
 
 def focus_stock_data_status(
