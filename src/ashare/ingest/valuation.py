@@ -24,8 +24,8 @@ FUND_INDEX_NAME = {
     "005658": "沪深300",
     "005919": "中证500",
     "016631": "中证1000",
-    "011609": "科创50",
 }
+# 乐咕接口不支持科创50；对应基金诚实留空，不把“无数据能力”伪装成刷新失败。
 # 指数代码 → 乐咕中文名 (温度计 + 校验)
 INDEX_NAME = {
     "000300": "沪深300",
@@ -68,10 +68,16 @@ def _last_trading_day(con):
     return r[0] if r else None
 
 
-def refresh_valuation(con, pf, index_symbol: str = "000300", force: bool = False) -> dict:
+def refresh_valuation(
+    con,
+    pf,
+    index_symbol: str = "000300",
+    force: bool = False,
+    ak: AkSource | None = None,
+) -> dict:
     """Top up valuation for the portfolio's stocks + mapped index funds + the
     thermometer index. Skips anything already at the latest trading day."""
-    ak = AkSource()
+    ak = ak or AkSource()
     target = _last_trading_day(con)
     done, skipped, failed = [], [], []
 

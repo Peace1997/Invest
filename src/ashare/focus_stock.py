@@ -14,6 +14,23 @@ import pandas as pd
 from .llm import NoKeyError, complete
 
 
+def focus_stock_data_status(
+    market_date,
+    expected_market_date,
+    research_date,
+) -> dict:
+    """Keep dynamic market freshness separate from a static research cutoff."""
+    market = pd.to_datetime(market_date).date() if market_date else None
+    expected = pd.to_datetime(expected_market_date).date() if expected_market_date else None
+    research = pd.to_datetime(research_date).date() if research_date else None
+    return {
+        "market_stale": bool(market and expected and market < expected),
+        "market_date": market.isoformat() if market else None,
+        "expected_market_date": expected.isoformat() if expected else None,
+        "research_date": research.isoformat() if research else None,
+    }
+
+
 def _momentum_bucket(value: float | None) -> str | None:
     if value is None or pd.isna(value):
         return None

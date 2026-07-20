@@ -9,6 +9,7 @@ from ashare.focus_stock import (
     _momentum_bucket,
     _non_overlapping_sample,
     conditional_forward_forecast,
+    focus_stock_data_status,
 )
 
 
@@ -30,6 +31,18 @@ def _market_with_prices(prices: list[float]):
 
 
 class FocusStockForecastTest(unittest.TestCase):
+    def test_focus_stock_dates_distinguish_stale_market_data_from_research_date(self):
+        status = focus_stock_data_status(
+            market_date="2026-07-15",
+            expected_market_date="2026-07-20",
+            research_date="2026-07-16",
+        )
+
+        self.assertTrue(status["market_stale"])
+        self.assertEqual(status["market_date"], "2026-07-15")
+        self.assertEqual(status["expected_market_date"], "2026-07-20")
+        self.assertEqual(status["research_date"], "2026-07-16")
+
     def test_momentum_bucket_boundaries_are_stable(self):
         self.assertEqual(_momentum_bucket(-10), "20日≤-10%")
         self.assertEqual(_momentum_bucket(-0.01), "20日-10%~0%")

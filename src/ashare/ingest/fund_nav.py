@@ -37,10 +37,15 @@ def _last_trading_day(con):
     return r[0] if r else None
 
 
-def refresh_fund_nav(con, pf, force: bool = False) -> dict:
+def refresh_fund_nav(
+    con,
+    pf,
+    force: bool = False,
+    ak: AkSource | None = None,
+) -> dict:
     """Top up NAV for the portfolio's OTC/bond funds. Skips funds already stored
     up to the latest trading day (idempotent, avoids re-pulling eastmoney)."""
-    ak = AkSource()
+    ak = ak or AkSource()
     target = _last_trading_day(con)
     done, skipped, failed = [], [], []
     codes = {h.code for h in pf.holdings

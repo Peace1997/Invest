@@ -15,8 +15,22 @@ def _ymd(d: date) -> str:
     return d.strftime("%Y%m%d")
 
 
+def expected_latest_trade_date(con, now: datetime | None = None):
+    """Latest daily bar that should be settled at the given local time."""
+    now = now or datetime.now()
+    end = now.date()
+    expected = con.execute(
+        "SELECT max(trade_date) FROM calendar WHERE trade_date<=?", [end]
+    ).fetchone()[0]
+    if expected == end and now.time() < dtime(15, 30):
+        expected = con.execute(
+            "SELECT max(trade_date) FROM calendar WHERE trade_date<?", [end]
+        ).fetchone()[0]
+    return expected
+
+
 def daily_update(con, src: AkSource, indices=(), lookback_days: int = 5,
-                 universe: str = "db") -> dict:
+                 universe: str = "db", refresh_metadata: bool = True) -> dict:
     """Run after market close. Pull last `lookback_days` to be safe against
     holidays / late corrections. Idempotent via upsert.
 
@@ -34,16 +48,17 @@ def daily_update(con, src: AkSource, indices=(), lookback_days: int = 5,
 
     # Metadata refreshes are best-effort: a flaky meta endpoint must NOT abort
     # the price ingestion that follows (bars are the priority).
-    for label, fn in [
-        ("calendar", lambda: ingest_calendar(con, src)),
-        ("instruments", lambda: ingest_instruments(con, src)),
-        ("northbound", lambda: ingest_northbound(con, src)),   # eastmoney history (frozen 2024-08)
-        ("northbound_ths", lambda: ingest_northbound_ths(con)),  # THS accumulate forward
-    ]:
-        try:
-            fn()
-        except Exception as e:
-            log.warning("daily meta step '%s' failed (non-fatal): %s", label, e)
+    if refresh_metadata:
+        for label, fn in [
+            ("calendar", lambda: ingest_calendar(con, src)),
+            ("instruments", lambda: ingest_instruments(con, src)),
+            ("northbound", lambda: ingest_northbound(con, src)),   # eastmoney history (frozen 2024-08)
+            ("northbound_ths", lambda: ingest_northbound_ths(con)),  # THS accumulate forward
+        ]:
+            try:
+                fn()
+            except Exception as e:
+                log.warning("daily meta step '%s' failed (non-fatal): %s", label, e)
 
     counts = {"stock": 0, "etf": 0, "index": 0, "failed": []}
 
@@ -181,12 +196,7 @@ def daily_update(con, src: AkSource, indices=(), lookback_days: int = 5,
     # 新鲜度断言: upsert 行数=输入行数(重刷旧窗口也非0), 不能证明数据真的追到最新交易日。
     # 真正的成功标准 = 库内最新行情日 ≥ "应已收盘的最新交易日"(取自 calendar)。
     if total_attempts > 0:
-        expected = con.execute(
-            "SELECT max(trade_date) FROM calendar WHERE trade_date<=?", [end]).fetchone()[0]
-        # 今日尚未收盘定稿(15:30前)→ 期望值回退到上一交易日(今日 bar 本就被守卫丢弃)
-        if expected == end and datetime.now().time() < dtime(15, 30):
-            expected = con.execute(
-                "SELECT max(trade_date) FROM calendar WHERE trade_date<?", [end]).fetchone()[0]
+        expected = expected_latest_trade_date(con)
         actual = con.execute("SELECT max(trade_date) FROM daily_bar").fetchone()[0]
         if expected is not None and (actual is None or actual < expected):
             print(f"\n  ⚠️ 数据未追到最新: 库内最新 {actual} < 应到 {expected} "

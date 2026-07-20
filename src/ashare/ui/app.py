@@ -163,7 +163,7 @@ def get_con():
             if attempt < 3:
                 _time.sleep(1.0)
                 continue
-            st.warning("📊 数据正在更新中（每天 15:15 收盘后、20:00 各刷新一次，约几分钟）——"
+            st.warning("📊 数据正在更新中（交易日 16:00、20:15 自动刷新，约几分钟）——"
                        "请稍候再点左上「🔄 刷新数据」或刷新页面。")
             st.stop()
 
@@ -1803,8 +1803,10 @@ def _render_focus_stock(con):
     """Dedicated evidence workspace for 东方精工 (002611)."""
     from ashare.focus_stock import (
         conditional_forward_forecast,
+        focus_stock_data_status,
         generate_focus_commentary,
     )
+    from ashare.jobs.daily_update import expected_latest_trade_date
     from ashare.factors.technical import trend_features
     from ashare.ingest.fundflow import load_stock_flow_for
     from ashare.ingest.lhb import load_lhb_for_symbols
@@ -1831,6 +1833,18 @@ def _render_focus_stock(con):
         st.error(result.get("error", "东方精工量化数据不可用"))
         return
     profile = result["profile"]
+    research_date = research_path.stem.rsplit("_", 1)[-1]
+    data_status = focus_stock_data_status(
+        market_date=profile["bar_date"],
+        expected_market_date=expected_latest_trade_date(con),
+        research_date=research_date,
+    )
+    if data_status["market_stale"]:
+        st.error(
+            f"日线数据仅到 {data_status['market_date']}，应至少到 "
+            f"{data_status['expected_market_date']}。请点击页面顶部“刷新行情”；"
+            "在更新成功前，趋势与概率预测均视为过期。"
+        )
     quote = profile["quote"] or {}
     valuation = profile["val"]
     quality = profile["qual"]
@@ -1893,7 +1907,7 @@ def _render_focus_stock(con):
     quality_date = quality.report_date if quality else None
     quote_time = quote.get("quote_time")
     st.caption(
-        f"数据时点 · 日线 {profile['bar_date']} · 估值 {valuation_date or '无'} · "
+        f"动态量化时点 · 日线 {profile['bar_date']} · 估值 {valuation_date or '无'} · "
         f"财务报告期 {quality_date or '无'} · 实时行情 {quote_time or '未取到'}"
     )
 
@@ -1985,9 +1999,16 @@ def _render_focus_stock(con):
 
     research_text = ""
     st.markdown("#### 公司、公告、行业与风险研究")
+    st.caption(
+        f"静态研究底稿截至 {data_status['research_date']}；它与上方动态行情日期分开维护，"
+        "只有出现新公告、财报或重大事件时才更新。"
+    )
     if research_path.exists():
         research_text = research_path.read_text(encoding="utf-8")
-        with st.expander("查看完整研究底稿（含一手来源）", expanded=True):
+        with st.expander(
+            f"查看完整研究底稿（静态，截至 {data_status['research_date']}）",
+            expanded=True,
+        ):
             st.markdown(research_text)
     else:
         st.info("研究底稿正在生成；量化与交易数据已经可用。")
@@ -2078,13 +2099,39 @@ def page_sentiment():
         st.rerun()
 
     if refresh_market:
-        try:
-            n = ingest_market_breadth(con)
-            st.success(f"市场温度已更新: {n} 行")
-            _reset_db_connection()
-            st.rerun()
-        except Exception as e:  # noqa: BLE001
-            st.warning(f"市场温度刷新失败: {e}")
+        from ashare.jobs.market_refresh import refresh_market_data
+
+        with st.spinner("更新股票、ETF、基金净值与估值…"):
+            refresh_result = refresh_market_data(con, get_cfg(), get_ak())
+        st.session_state["market_refresh_result"] = refresh_result
+        _reset_db_connection()
+        st.rerun()
+
+    refresh_result = st.session_state.pop("market_refresh_result", None)
+    if refresh_result:
+        dates = refresh_result["dates"]
+        daily = refresh_result.get("daily", {})
+        market_stale = (
+            dates["market"] is None
+            or (dates["expected_market"] is not None
+                and dates["market"] < dates["expected_market"])
+        )
+        if refresh_result["errors"] or daily.get("all_failed") or market_stale:
+            st.warning("行情刷新未完全成功，请查看下方失败详情。")
+        else:
+            st.success("股票、ETF、基金净值与估值已刷新。")
+        st.caption(
+            f"数据时点 · 行情 {dates['market'] or '无'}（应到 {dates['expected_market'] or '无'}） · "
+            f"基金净值 {dates['fund_nav'] or '无'} · 估值 {dates['valuation'] or '无'}"
+        )
+        failures = []
+        failures.extend(f"{stage}: {error}" for stage, error in refresh_result["errors"].items())
+        if refresh_result["fund_nav"]["failed"]:
+            failures.append("基金净值失败: " + "、".join(refresh_result["fund_nav"]["failed"]))
+        if refresh_result["valuation"]["failed"]:
+            failures.append("估值失败: " + "、".join(refresh_result["valuation"]["failed"]))
+        if failures:
+            st.error("；".join(failures))
 
     if summarize:
         with st.spinner("基于当前新闻生成 AI 舆情总结…"):

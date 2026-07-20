@@ -128,6 +128,36 @@ def cmd_daily(cfg, con, src, args=None):
         sys.exit(2)   # 全失败 或 数据未追到最新交易日 → 非0退出, 供 cron/监控捕获
 
 
+def cmd_market_refresh(cfg, con, src, args=None):
+    """Refresh every market dataset consumed by the dashboard."""
+    from .jobs.market_refresh import refresh_market_data
+
+    init_schema(con)
+    result = refresh_market_data(con, cfg, src)
+    dates = result["dates"]
+    print("══════ 市场数据刷新 ══════")
+    print(
+        f"行情 {dates['market']} / 应到 {dates['expected_market']} · "
+        f"基金净值 {dates['fund_nav']} · 估值 {dates['valuation']}"
+    )
+    print(
+        f"基金净值: 更新{len(result['fund_nav']['done'])} "
+        f"跳过{len(result['fund_nav']['skipped'])} 失败{len(result['fund_nav']['failed'])}"
+    )
+    print(
+        f"持仓估值: 更新{len(result['valuation']['done'])} "
+        f"跳过{len(result['valuation']['skipped'])} 失败{len(result['valuation']['failed'])}"
+    )
+    for stage, error in result["errors"].items():
+        print(f"⚠ {stage}刷新失败: {error}")
+
+    daily = result.get("daily", {})
+    partial_failed = result["fund_nav"]["failed"] or result["valuation"]["failed"]
+    if result["errors"] or daily.get("all_failed") or daily.get("stale") or partial_failed:
+        import sys
+        sys.exit(2)
+
+
 def cmd_alerts(cfg, con, src, args=None):
     """盘中预警: 查持仓+大盘实时价, 触发阈值推送(Server酱). 交易时段用; --force 忽略时段测试。
     只读 DB(不抢看板锁), 状态写 data/alert_state.json。"""
@@ -635,6 +665,7 @@ CMDS = {
     "backfill-min": cmd_backfill_min,
     "min-update": cmd_min_update,
     "daily": cmd_daily,
+    "market-refresh": cmd_market_refresh,
     "today": cmd_today,
     "live": cmd_live,
     "ui": cmd_ui,
