@@ -16,12 +16,14 @@ import pandas as pd
 from .llm import NoKeyError, complete
 
 
-def latest_focus_stock_research(research_dir: Path) -> dict | None:
-    """Load the newest dated 东方精工 research document."""
-    stem = "dongfang_jinggong_002611"
+def latest_stock_research(research_dir: Path, code: str) -> dict | None:
+    """Load the newest dated research document for a stock code."""
+    symbol = str(code).strip().zfill(6)
     dated_paths = []
-    pattern = re.compile(rf"^{re.escape(stem)}_(\d{{4}}-\d{{2}}-\d{{2}})\.md$")
-    for path in research_dir.glob(f"{stem}_*.md"):
+    pattern = re.compile(
+        rf"^.+_{re.escape(symbol)}_(\d{{4}}-\d{{2}}-\d{{2}})\.md$"
+    )
+    for path in research_dir.glob(f"*_{symbol}_*.md"):
         match = pattern.match(path.name)
         if match:
             dated_paths.append((match.group(1), path))

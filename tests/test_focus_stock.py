@@ -12,7 +12,7 @@ from ashare.focus_stock import (
     _non_overlapping_sample,
     conditional_forward_forecast,
     focus_stock_data_status,
-    latest_focus_stock_research,
+    latest_stock_research,
 )
 
 
@@ -37,12 +37,12 @@ class FocusStockForecastTest(unittest.TestCase):
     def test_latest_research_document_uses_newest_dated_report(self):
         with TemporaryDirectory() as tmp:
             research_dir = Path(tmp)
-            old = research_dir / "dongfang_jinggong_002611_2026-07-16.md"
-            latest = research_dir / "dongfang_jinggong_002611_2026-07-20.md"
+            old = research_dir / "任意公司名_002611_2026-07-16.md"
+            latest = research_dir / "另一个文件前缀_002611_2026-07-20.md"
             old.write_text("旧底稿", encoding="utf-8")
             latest.write_text("最新底稿", encoding="utf-8")
 
-            document = latest_focus_stock_research(research_dir)
+            document = latest_stock_research(research_dir, "2611")
 
             self.assertEqual(document["path"], latest)
             self.assertEqual(document["research_date"], "2026-07-20")

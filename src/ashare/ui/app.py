@@ -1805,7 +1805,7 @@ def _render_focus_stock(con):
         conditional_forward_forecast,
         focus_stock_data_status,
         generate_focus_commentary,
-        latest_focus_stock_research,
+        latest_stock_research,
     )
     from ashare.jobs.daily_update import expected_latest_trade_date
     from ashare.factors.technical import trend_features
@@ -1814,7 +1814,7 @@ def _render_focus_stock(con):
     from ashare.stockeval import evaluate_stock
 
     code = "002611"
-    research_document = latest_focus_stock_research(_SRC.parent / "docs" / "research")
+    research_document = latest_stock_research(_SRC.parent / "docs" / "research", code)
 
     st.markdown("### 东方精工 · 002611")
     st.caption(
