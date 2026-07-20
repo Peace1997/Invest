@@ -2109,14 +2109,11 @@ def page_sentiment():
 
     refresh_result = st.session_state.pop("market_refresh_result", None)
     if refresh_result:
+        from ashare.jobs.market_refresh import market_refresh_failures
+
         dates = refresh_result["dates"]
-        daily = refresh_result.get("daily", {})
-        market_stale = (
-            dates["market"] is None
-            or (dates["expected_market"] is not None
-                and dates["market"] < dates["expected_market"])
-        )
-        if refresh_result["errors"] or daily.get("all_failed") or market_stale:
+        failures = market_refresh_failures(refresh_result)
+        if failures:
             st.warning("行情刷新未完全成功，请查看下方失败详情。")
         else:
             st.success("股票、ETF、基金净值与估值已刷新。")
@@ -2124,12 +2121,6 @@ def page_sentiment():
             f"数据时点 · 行情 {dates['market'] or '无'}（应到 {dates['expected_market'] or '无'}） · "
             f"基金净值 {dates['fund_nav'] or '无'} · 估值 {dates['valuation'] or '无'}"
         )
-        failures = []
-        failures.extend(f"{stage}: {error}" for stage, error in refresh_result["errors"].items())
-        if refresh_result["fund_nav"]["failed"]:
-            failures.append("基金净值失败: " + "、".join(refresh_result["fund_nav"]["failed"]))
-        if refresh_result["valuation"]["failed"]:
-            failures.append("估值失败: " + "、".join(refresh_result["valuation"]["failed"]))
         if failures:
             st.error("；".join(failures))
 

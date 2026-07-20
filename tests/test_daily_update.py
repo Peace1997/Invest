@@ -5,7 +5,7 @@ from datetime import date, datetime
 
 import duckdb
 
-from ashare.jobs.daily_update import expected_latest_trade_date
+from ashare.jobs.daily_update import expected_latest_trade_date, resolve_update_universe
 
 
 class ExpectedLatestTradeDateTest(unittest.TestCase):
@@ -33,6 +33,21 @@ class ExpectedLatestTradeDateTest(unittest.TestCase):
         )
 
         self.assertEqual(latest, date(2026, 7, 20))
+
+    def test_current_holdings_are_added_to_database_update_universe(self):
+        self.con.execute(
+            "CREATE TABLE daily_bar (symbol VARCHAR, type VARCHAR)"
+        )
+        self.con.execute("INSERT INTO daily_bar VALUES ('002611', 'stock')")
+
+        stocks, etfs = resolve_update_universe(
+            self.con,
+            universe="db",
+            extra_instruments=(("000001", "stock"), ("560700", "etf")),
+        )
+
+        self.assertEqual(stocks, ["000001", "002611"])
+        self.assertEqual(etfs, ["560700"])
 
 
 if __name__ == "__main__":

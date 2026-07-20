@@ -29,8 +29,38 @@ def expected_latest_trade_date(con, now: datetime | None = None):
     return expected
 
 
+def resolve_update_universe(
+    con,
+    universe: str,
+    extra_instruments=(),
+) -> tuple[list[str], list[str]]:
+    """Resolve stored symbols plus explicitly requested stock/ETF holdings."""
+    if universe == "db":
+        rows = con.execute("SELECT DISTINCT symbol, type FROM daily_bar").df()
+        stocks = set(rows[rows["type"] == "stock"]["symbol"].astype(str))
+        etfs = set(rows[rows["type"] == "etf"]["symbol"].astype(str))
+    elif universe == "all":
+        stocks = set(con.execute(
+            "SELECT symbol FROM instruments WHERE type='stock' AND delist_date IS NULL"
+        ).df()["symbol"].astype(str))
+        etfs = set(con.execute(
+            "SELECT symbol FROM instruments WHERE type='etf' AND delist_date IS NULL"
+        ).df()["symbol"].astype(str))
+    else:
+        raise ValueError(f"unknown universe: {universe!r} (expected 'db' or 'all')")
+
+    for code, kind in extra_instruments:
+        key = str(code).zfill(6)
+        if kind == "stock":
+            stocks.add(key)
+        elif kind == "etf":
+            etfs.add(key)
+    return sorted(stocks), sorted(etfs)
+
+
 def daily_update(con, src: AkSource, indices=(), lookback_days: int = 5,
-                 universe: str = "db", refresh_metadata: bool = True) -> dict:
+                 universe: str = "db", refresh_metadata: bool = True,
+                 extra_instruments=()) -> dict:
     """Run after market close. Pull last `lookback_days` to be safe against
     holidays / late corrections. Idempotent via upsert.
 
@@ -62,24 +92,11 @@ def daily_update(con, src: AkSource, indices=(), lookback_days: int = 5,
 
     counts = {"stock": 0, "etf": 0, "index": 0, "failed": []}
 
+    stocks, etfs = resolve_update_universe(con, universe, extra_instruments)
     if universe == "db":
-        # Only symbols already known to daily_bar
-        rows = con.execute(
-            "SELECT DISTINCT symbol, type FROM daily_bar"
-        ).df()
-        stocks = rows[rows["type"] == "stock"]["symbol"].tolist()
-        etfs = rows[rows["type"] == "etf"]["symbol"].tolist()
         log.info("daily_update universe=db: %d stocks, %d etfs", len(stocks), len(etfs))
-    elif universe == "all":
-        stocks = con.execute(
-            "SELECT symbol FROM instruments WHERE type='stock' AND delist_date IS NULL"
-        ).df()["symbol"].tolist()
-        etfs = con.execute(
-            "SELECT symbol FROM instruments WHERE type='etf' AND delist_date IS NULL"
-        ).df()["symbol"].tolist()
-        log.info("daily_update universe=all: %d stocks, %d etfs", len(stocks), len(etfs))
     else:
-        raise ValueError(f"unknown universe: {universe!r} (expected 'db' or 'all')")
+        log.info("daily_update universe=all: %d stocks, %d etfs", len(stocks), len(etfs))
 
     attempted = {"stock": len(stocks), "etf": len(etfs), "index": len(indices)}
     fail_by_type = {"stock": 0, "etf": 0, "index": 0}

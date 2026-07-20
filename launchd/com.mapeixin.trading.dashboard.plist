@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.mapeixin.trading.dashboard</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/mapeixin/Trading/Invest/.venv/bin/python</string>
+        <string>-m</string>
+        <string>streamlit</string>
+        <string>run</string>
+        <string>src/ashare/ui/app.py</string>
+        <string>--server.address</string>
+        <string>127.0.0.1</string>
+        <string>--server.port</string>
+        <string>8501</string>
+        <string>--server.headless</string>
+        <string>true</string>
+        <string>--browser.gatherUsageStats</string>
+        <string>false</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/mapeixin/Trading/Invest</string>
+    <key>StandardOutPath</key>
+    <string>/Users/mapeixin/Trading/Invest/logs/dashboard-local.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/mapeixin/Trading/Invest/logs/dashboard-local.log</string>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+</dict>
+</plist>

@@ -130,7 +130,7 @@ def cmd_daily(cfg, con, src, args=None):
 
 def cmd_market_refresh(cfg, con, src, args=None):
     """Refresh every market dataset consumed by the dashboard."""
-    from .jobs.market_refresh import refresh_market_data
+    from .jobs.market_refresh import market_refresh_failures, refresh_market_data
 
     init_schema(con)
     result = refresh_market_data(con, cfg, src)
@@ -148,12 +148,10 @@ def cmd_market_refresh(cfg, con, src, args=None):
         f"持仓估值: 更新{len(result['valuation']['done'])} "
         f"跳过{len(result['valuation']['skipped'])} 失败{len(result['valuation']['failed'])}"
     )
-    for stage, error in result["errors"].items():
-        print(f"⚠ {stage}刷新失败: {error}")
-
-    daily = result.get("daily", {})
-    partial_failed = result["fund_nav"]["failed"] or result["valuation"]["failed"]
-    if result["errors"] or daily.get("all_failed") or daily.get("stale") or partial_failed:
+    failures = market_refresh_failures(result)
+    for failure in failures:
+        print(f"⚠ {failure}")
+    if failures:
         import sys
         sys.exit(2)
 
