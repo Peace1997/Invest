@@ -8,10 +8,31 @@ This keeps the result explainable and makes the sample size/uncertainty visible.
 from __future__ import annotations
 
 from math import sqrt
+from pathlib import Path
+import re
 
 import pandas as pd
 
 from .llm import NoKeyError, complete
+
+
+def latest_focus_stock_research(research_dir: Path) -> dict | None:
+    """Load the newest dated 东方精工 research document."""
+    stem = "dongfang_jinggong_002611"
+    dated_paths = []
+    pattern = re.compile(rf"^{re.escape(stem)}_(\d{{4}}-\d{{2}}-\d{{2}})\.md$")
+    for path in research_dir.glob(f"{stem}_*.md"):
+        match = pattern.match(path.name)
+        if match:
+            dated_paths.append((match.group(1), path))
+    if not dated_paths:
+        return None
+    research_date, path = max(dated_paths, key=lambda item: item[0])
+    return {
+        "path": path,
+        "research_date": research_date,
+        "text": path.read_text(encoding="utf-8"),
+    }
 
 
 def focus_stock_data_status(

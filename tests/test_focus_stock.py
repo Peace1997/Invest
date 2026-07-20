@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import duckdb
 import pandas as pd
@@ -10,6 +12,7 @@ from ashare.focus_stock import (
     _non_overlapping_sample,
     conditional_forward_forecast,
     focus_stock_data_status,
+    latest_focus_stock_research,
 )
 
 
@@ -31,6 +34,20 @@ def _market_with_prices(prices: list[float]):
 
 
 class FocusStockForecastTest(unittest.TestCase):
+    def test_latest_research_document_uses_newest_dated_report(self):
+        with TemporaryDirectory() as tmp:
+            research_dir = Path(tmp)
+            old = research_dir / "dongfang_jinggong_002611_2026-07-16.md"
+            latest = research_dir / "dongfang_jinggong_002611_2026-07-20.md"
+            old.write_text("旧底稿", encoding="utf-8")
+            latest.write_text("最新底稿", encoding="utf-8")
+
+            document = latest_focus_stock_research(research_dir)
+
+            self.assertEqual(document["path"], latest)
+            self.assertEqual(document["research_date"], "2026-07-20")
+            self.assertEqual(document["text"], "最新底稿")
+
     def test_focus_stock_dates_distinguish_stale_market_data_from_research_date(self):
         status = focus_stock_data_status(
             market_date="2026-07-15",

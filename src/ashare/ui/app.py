@@ -1805,6 +1805,7 @@ def _render_focus_stock(con):
         conditional_forward_forecast,
         focus_stock_data_status,
         generate_focus_commentary,
+        latest_focus_stock_research,
     )
     from ashare.jobs.daily_update import expected_latest_trade_date
     from ashare.factors.technical import trend_features
@@ -1813,7 +1814,7 @@ def _render_focus_stock(con):
     from ashare.stockeval import evaluate_stock
 
     code = "002611"
-    research_path = _SRC.parent / "docs" / "research" / "dongfang_jinggong_002611_2026-07-16.md"
+    research_document = latest_focus_stock_research(_SRC.parent / "docs" / "research")
 
     st.markdown("### 东方精工 · 002611")
     st.caption(
@@ -1833,7 +1834,7 @@ def _render_focus_stock(con):
         st.error(result.get("error", "东方精工量化数据不可用"))
         return
     profile = result["profile"]
-    research_date = research_path.stem.rsplit("_", 1)[-1]
+    research_date = research_document["research_date"] if research_document else None
     data_status = focus_stock_data_status(
         market_date=profile["bar_date"],
         expected_market_date=expected_latest_trade_date(con),
@@ -2003,8 +2004,8 @@ def _render_focus_stock(con):
         f"静态研究底稿截至 {data_status['research_date']}；它与上方动态行情日期分开维护，"
         "只有出现新公告、财报或重大事件时才更新。"
     )
-    if research_path.exists():
-        research_text = research_path.read_text(encoding="utf-8")
+    if research_document:
+        research_text = research_document["text"]
         with st.expander(
             f"查看完整研究底稿（静态，截至 {data_status['research_date']}）",
             expanded=True,
