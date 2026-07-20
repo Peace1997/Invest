@@ -2516,7 +2516,7 @@ def page_stockeval():
 
 def page_positions():
     st.markdown("### 我的仓位")
-    st.caption("查询股票/ETF后只填份额和持仓总成本即可加入；成本价由系统计算。数据只保存在本机 positions.yaml。")
+    st.caption("股票可填成本价或持仓总成本；基金只填份额和持仓总成本。数据只保存在本机 positions.yaml。")
     from ashare.portfolio import save_positions, search_instruments, unit_cost_from_total
 
     local_pf = load_position_overview()
@@ -2563,6 +2563,7 @@ def page_positions():
         horizontal=True, label_visibility="collapsed",
     )
     selected = None
+    stock_cost_mode = "持仓总成本"
     if mode == "查询股票/ETF":
         query = st.text_input("查询代码或名称", placeholder="例如：560700、央企红利、平安银行")
         matches = search_instruments(get_con(), query, limit=10) if query.strip() else []
@@ -2574,6 +2575,11 @@ def page_positions():
             selected = labels[st.selectbox("选择标的", list(labels))]
         elif query.strip():
             st.info("本地股票/ETF库没有匹配结果；场外基金请切换到手动输入。")
+        if selected and selected["type"] == "stock":
+            stock_cost_mode = st.radio(
+                "股票成本录入方式", ["成本价", "持仓总成本"], horizontal=True,
+                key=f"quick_stock_cost_mode_{selected['code']}",
+            )
 
     with st.form("quick_position_form", clear_on_submit=False):
         if mode == "查询股票/ETF":
@@ -2597,11 +2603,18 @@ def page_positions():
             value=float(existing.shares) if existing else 0.0,
             key=f"quick_shares_{code or mode}",
         )
-        holding_cost = inputs[1].number_input(
-            "持仓总成本(元)", min_value=0.0, step=100.0, format="%.2f",
-            value=float(existing.cost_value or 0) if existing else 0.0,
-            key=f"quick_total_cost_{code or mode}",
-        )
+        if kind == "stock" and stock_cost_mode == "成本价":
+            entered_cost = inputs[1].number_input(
+                "成本价(元/股)", min_value=0.0, step=0.01, format="%.4f",
+                value=float(existing.cost) if existing else 0.0,
+                key=f"quick_unit_cost_{code or mode}",
+            )
+        else:
+            entered_cost = inputs[1].number_input(
+                "持仓总成本(元)", min_value=0.0, step=100.0, format="%.2f",
+                value=float(existing.cost_value or 0) if existing else 0.0,
+                key=f"quick_total_cost_{code or mode}",
+            )
         quick_save = st.form_submit_button(
             "加入或更新持仓", type="primary", width="stretch",
             disabled=mode == "查询股票/ETF" and selected is None,
@@ -2609,7 +2622,12 @@ def page_positions():
 
     if quick_save:
         try:
-            cost = unit_cost_from_total(holding_cost, shares)
+            if kind == "stock" and stock_cost_mode == "成本价":
+                if entered_cost and shares <= 0:
+                    raise ValueError("填写成本价时，股数必须大于0")
+                cost = float(entered_cost)
+            else:
+                cost = unit_cost_from_total(entered_cost, shares)
             current_rows = [
                 {"code": h.code, "name": h.name, "type": h.type,
                  "shares": h.shares, "cost": h.cost}
