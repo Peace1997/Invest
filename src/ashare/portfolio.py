@@ -20,6 +20,35 @@ _ON_EXCHANGE = {"etf", "stock"}
 _OTC = {"otc_fund", "bond_fund"}
 
 
+def search_instruments(con, query: str, limit: int = 10) -> list[dict]:
+    """Find locally known stocks and ETFs by code or name."""
+    text = str(query or "").strip()
+    if not text:
+        return []
+    rows = con.execute(
+        """
+        SELECT symbol, name, type, exchange
+        FROM instruments
+        WHERE type IN ('stock', 'etf')
+          AND (symbol LIKE ? OR name ILIKE ?)
+        ORDER BY CASE
+            WHEN symbol = ? THEN 0
+            WHEN name = ? THEN 1
+            WHEN symbol LIKE ? THEN 2
+            WHEN name ILIKE ? THEN 3
+            ELSE 4
+        END, symbol
+        LIMIT ?
+        """,
+        [f"{text}%", f"%{text}%", text, text, f"{text}%", f"{text}%",
+         max(1, min(int(limit), 50))],
+    ).fetchall()
+    return [
+        {"code": code, "name": name, "type": kind, "exchange": exchange}
+        for code, name, kind, exchange in rows
+    ]
+
+
 @dataclass
 class Holding:
     code: str

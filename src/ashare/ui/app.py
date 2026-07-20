@@ -27,7 +27,7 @@ if str(_SRC) not in sys.path:
 from ashare.config import load, resolve_path
 from ashare.storage import open_db, init_schema
 from ashare.sources import AkSource
-from ashare.portfolio import load_positions, value_portfolio, Holding
+from ashare.portfolio import load_positions, value_portfolio, Holding, Portfolio
 from ashare.signals import score_portfolio, index_timing, recommend_stocks, recommend_index_funds
 from ashare.decision import generate_advice, compute_price_levels
 from ashare.snapshots import load_history, snapshot_portfolio, max_drawdown
@@ -197,6 +197,14 @@ def load_bundle():
     timing = index_timing(con)
     history = load_history(con)
     return pf, health, advice, timing, history
+
+
+@st.cache_data(ttl=300, show_spinner="更新持仓估值中…")
+def load_position_overview() -> Portfolio:
+    pf = load_positions() or Portfolio()
+    if pf.holdings:
+        pf = value_portfolio(pf, ak_src=get_ak(), con=get_con())
+    return pf
 
 
 @st.cache_data(ttl=1800, show_spinner="全市场主板打分中(首次较慢)…")
@@ -2043,7 +2051,7 @@ def page_sentiment():
 
     view = st.segmented_control(
         "工作区",
-        ["市场概览", "东方精工", "资讯监控", "资金与龙虎榜", "决策复盘", "数据状态"],
+        ["市场概览", "我的仓位", "东方精工", "资讯监控", "资金与龙虎榜", "决策复盘", "数据状态"],
         default="市场概览",
         required=True,
         key="market_workspace",
@@ -2122,6 +2130,8 @@ def page_sentiment():
 
     if view == "市场概览":
         _render_market_overview(news, current_sent, current_market)
+    elif view == "我的仓位":
+        page_positions()
     elif view == "东方精工":
         _render_focus_stock(con)
     elif view == "资讯监控":
@@ -2505,13 +2515,120 @@ def page_stockeval():
 
 
 def page_positions():
-    st.subheader("✏️ 持仓管理")
-    st.caption("直接编辑下表(右下角 ＋ 增行、选中行 🗑 删行)。代码=6位数字;类型 etf/stock 场内实时估值、"
-               "otc_fund/bond_fund 场外按净值T-1。只填 代码/名称/类型/份额/成本——"
-               "现价·市值·浮盈等批注由系统每日自动刷新, 不用你管。保存即写回 positions.yaml。")
-    from ashare.portfolio import save_positions
+    st.markdown("### 我的仓位")
+    st.caption("查询股票/ETF后只填份额和成本即可加入；场外基金可手动输入。数据只保存在本机 positions.yaml。")
+    from ashare.portfolio import save_positions, search_instruments
+
+    local_pf = load_position_overview()
+    total = local_pf.total_market_value
+    invested = total - local_pf.cash
+    metrics = st.columns(4)
+    metrics[0].metric("总资产", f"{total:,.0f} 元")
+    metrics[1].metric("持仓市值", f"{invested:,.0f} 元")
+    metrics[2].metric("现金", f"{local_pf.cash:,.0f} 元")
+    pnl = local_pf.total_pnl
+    metrics[3].metric("累计浮盈", f"{pnl:,.0f} 元" if pnl is not None else "—")
+
+    if local_pf.unvalued:
+        names = "、".join(h.name for h in local_pf.unvalued)
+        st.warning(f"以下持仓暂未计入总资产：{names}")
+
+    overview_rows = []
+    for h in sorted(local_pf.holdings, key=lambda item: item.market_value or 0, reverse=True):
+        overview_rows.append({
+            "代码": h.code,
+            "名称": h.name,
+            "类型": h.type,
+            "市值(元)": round(h.market_value) if h.market_value is not None else None,
+            "权重%": round(local_pf.weight(h), 1) if local_pf.weight(h) is not None else None,
+            "浮盈%": round(h.pnl_pct, 1) if h.pnl_pct is not None else None,
+            "定价": h.price_kind or h.note,
+        })
+    if overview_rows:
+        st.dataframe(pd.DataFrame(overview_rows), width="stretch", hide_index=True)
+        categories = local_pf.by_category()
+        st.caption("仓位结构 · " + " · ".join(
+            f"{name} {amount / total * 100:.1f}%" if total else f"{name} —"
+            for name, amount in categories.items()
+        ))
+    else:
+        st.info("还没有持仓，可从下面开始添加。")
+
+    st.markdown("#### 快速添加或更新")
+    mode = st.radio(
+        "录入方式", ["查询股票/ETF", "手动输入场外基金"],
+        horizontal=True, label_visibility="collapsed",
+    )
+    selected = None
+    if mode == "查询股票/ETF":
+        query = st.text_input("查询代码或名称", placeholder="例如：560700、央企红利、平安银行")
+        matches = search_instruments(get_con(), query, limit=10) if query.strip() else []
+        if matches:
+            labels = {
+                f"{item['name']}（{item['code']} · {item['exchange']}）": item
+                for item in matches
+            }
+            selected = labels[st.selectbox("选择标的", list(labels))]
+        elif query.strip():
+            st.info("本地股票/ETF库没有匹配结果；场外基金请切换到手动输入。")
+
+    with st.form("quick_position_form", clear_on_submit=False):
+        if mode == "查询股票/ETF":
+            code = selected["code"] if selected else ""
+            name = selected["name"] if selected else ""
+            kind = selected["type"] if selected else "etf"
+            existing = next((h for h in local_pf.holdings if h.code == code), None)
+            if existing:
+                st.caption(f"更新已有持仓：{name}（{code}）")
+            else:
+                st.caption(f"待录入：{name}（{code}）" if selected else "请先在上方选择标的")
+        else:
+            manual = st.columns([0.22, 0.5, 0.28])
+            code = manual[0].text_input("6位基金代码", max_chars=6)
+            name = manual[1].text_input("基金名称")
+            kind = manual[2].selectbox("类型", ["otc_fund", "bond_fund"])
+            existing = None
+        inputs = st.columns(2)
+        shares = inputs[0].number_input(
+            "份额/股数", min_value=0.0, step=100.0,
+            value=float(existing.shares) if existing else 0.0,
+            key=f"quick_shares_{code or mode}",
+        )
+        cost = inputs[1].number_input(
+            "成本价", min_value=0.0, step=0.01, format="%.4f",
+            value=float(existing.cost) if existing else 0.0,
+            key=f"quick_cost_{code or mode}",
+        )
+        quick_save = st.form_submit_button(
+            "加入或更新持仓", type="primary", width="stretch",
+            disabled=mode == "查询股票/ETF" and selected is None,
+        )
+
+    if quick_save:
+        current_rows = [
+            {"code": h.code, "name": h.name, "type": h.type,
+             "shares": h.shares, "cost": h.cost}
+            for h in local_pf.holdings
+        ]
+        new_row = {"code": code, "name": name, "type": kind, "shares": shares, "cost": cost}
+        if any(row["code"] == code for row in current_rows):
+            current_rows = [new_row if row["code"] == code else row for row in current_rows]
+        else:
+            current_rows.append(new_row)
+        try:
+            save_positions(current_rows, local_pf.cash)
+        except ValueError as e:
+            st.error(f"保存失败：{e}")
+        else:
+            st.cache_data.clear()
+            st.success(f"已保存 {name}（{code}）。")
+            st.rerun()
+
+    st.divider()
+    st.markdown("#### 编辑全部持仓")
+    st.caption("可直接修改、增行或删除；保存后会覆盖上面的持仓列表。")
     rows = [{"code": h.code, "name": h.name, "type": h.type,
-             "shares": float(h.shares), "cost": float(h.cost)} for h in pf.holdings]
+             "shares": float(h.shares), "cost": float(h.cost)} for h in local_pf.holdings]
     df = pd.DataFrame(rows, columns=["code", "name", "type", "shares", "cost"])
     edited = st.data_editor(
         df, num_rows="dynamic", width="stretch", key="pos_editor",
@@ -2525,7 +2642,7 @@ def page_positions():
                                                   help="每股/每份成本; 不知道填0则只算权重不算盈亏"),
         })
     cash = st.number_input("现金仓位(元, 计入总资产算权重)", min_value=0.0,
-                           value=float(pf.cash), step=100.0)
+                           value=float(local_pf.cash), step=100.0)
     c1, c2 = st.columns([0.18, 0.82])
     if c1.button("💾 保存", type="primary", width="stretch"):
         try:
