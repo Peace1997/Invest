@@ -25,6 +25,8 @@ def market_refresh_failures(result: dict) -> list[str]:
     )
     if daily.get("all_failed"):
         failures.append("行情源未写入任何数据")
+    elif daily.get("stale"):
+        failures.append("整体行情未追到应有交易日")
     for code in result.get("fund_nav", {}).get("failed", []):
         failures.append(f"基金净值失败: {code}")
     for code in result.get("valuation", {}).get("failed", []):

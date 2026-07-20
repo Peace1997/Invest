@@ -34,6 +34,20 @@ class MarketRefreshFailuresTest(unittest.TestCase):
 
         self.assertEqual(market_refresh_failures(result), [])
 
+    def test_global_stale_result_fails_without_exchange_traded_holdings(self):
+        result = {
+            "errors": {},
+            "daily": {"failed": [], "stale": True},
+            "fund_nav": {"failed": []},
+            "valuation": {"failed": []},
+            "stale_targets": {},
+        }
+
+        self.assertEqual(
+            market_refresh_failures(result),
+            ["整体行情未追到应有交易日"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
