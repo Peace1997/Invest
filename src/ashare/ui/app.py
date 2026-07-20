@@ -2517,7 +2517,9 @@ def page_stockeval():
 def page_positions():
     st.markdown("### 我的仓位")
     st.caption("股票可填成本价或持仓总成本；基金只填份额和持仓总成本。数据只保存在本机 positions.yaml。")
-    from ashare.portfolio import save_positions, search_instruments, unit_cost_from_total
+    from ashare.portfolio import (
+        save_positions, search_instruments, unit_cost_from_price, unit_cost_from_total,
+    )
 
     local_pf = load_position_overview()
     total = local_pf.total_market_value
@@ -2541,7 +2543,7 @@ def page_positions():
             "类型": h.type,
             "份额/股数": h.shares,
             "持仓成本(元)": round(h.cost_value, 2) if h.cost_value is not None else None,
-            "成本价(自动)": round(h.cost, 4) if h.cost else None,
+            "成本价": round(h.cost, 4) if h.cost else None,
             "市值(元)": round(h.market_value) if h.market_value is not None else None,
             "权重%": round(local_pf.weight(h), 1) if local_pf.weight(h) is not None else None,
             "浮盈%": round(h.pnl_pct, 1) if h.pnl_pct is not None else None,
@@ -2623,9 +2625,7 @@ def page_positions():
     if quick_save:
         try:
             if kind == "stock" and stock_cost_mode == "成本价":
-                if entered_cost and shares <= 0:
-                    raise ValueError("填写成本价时，股数必须大于0")
-                cost = float(entered_cost)
+                cost = unit_cost_from_price(entered_cost, shares)
             else:
                 cost = unit_cost_from_total(entered_cost, shares)
             current_rows = [
@@ -2649,28 +2649,31 @@ def page_positions():
 
     st.divider()
     st.markdown("#### 编辑全部持仓")
-    st.caption("只需维护份额和持仓总成本；成本价保存后自动计算。也可直接增行或删除。")
+    st.caption("股票维护成本价，基金维护持仓总成本；也可直接增行或删除。")
     rows = [
         {"code": h.code, "name": h.name, "type": h.type, "shares": float(h.shares),
-         "total_cost": float(h.cost_value or 0), "unit_cost": float(h.cost)}
+         "stock_unit_cost": float(h.cost) if h.type == "stock" else None,
+         "fund_total_cost": float(h.cost_value or 0) if h.type != "stock" else None}
         for h in local_pf.holdings
     ]
     df = pd.DataFrame(
-        rows, columns=["code", "name", "type", "shares", "total_cost", "unit_cost"])
+        rows, columns=[
+            "code", "name", "type", "shares", "stock_unit_cost", "fund_total_cost",
+        ])
     edited = st.data_editor(
         df, num_rows="dynamic", width="stretch", key="pos_editor",
-        disabled=["unit_cost"],
         column_config={
             "code": st.column_config.TextColumn("代码", help="6位数字代码", max_chars=6, required=True),
             "name": st.column_config.TextColumn("名称", help="自己看的, 随便写"),
             "type": st.column_config.SelectboxColumn(
                 "类型", options=["etf", "stock", "otc_fund", "bond_fund"], required=True),
             "shares": st.column_config.NumberColumn("份额/股数", min_value=0.0, format="%.2f"),
-            "total_cost": st.column_config.NumberColumn(
-                "持仓总成本(元)", min_value=0.0, format="%.2f",
-                help="当前剩余份额对应的总成本；不知道可填0"),
-            "unit_cost": st.column_config.NumberColumn(
-                "成本价(自动)", min_value=0.0, format="%.4f"),
+            "stock_unit_cost": st.column_config.NumberColumn(
+                "股票成本价(元/股)", min_value=0.0, format="%.4f",
+                help="股票填写；基金留空"),
+            "fund_total_cost": st.column_config.NumberColumn(
+                "基金持仓总成本(元)", min_value=0.0, format="%.2f",
+                help="ETF/场外基金填写；股票留空"),
         })
     cash = st.number_input("现金仓位(元, 计入总资产算权重)", min_value=0.0,
                            value=float(local_pf.cash), step=100.0)
@@ -2680,12 +2683,18 @@ def page_positions():
             storage_rows = []
             for row in edited.to_dict("records"):
                 shares_value = 0.0 if pd.isna(row.get("shares")) else float(row.get("shares") or 0)
-                total_cost_value = (0.0 if pd.isna(row.get("total_cost"))
-                                    else float(row.get("total_cost") or 0))
+                if row.get("type") == "stock":
+                    raw_cost = row.get("stock_unit_cost")
+                    entered_unit_cost = 0.0 if pd.isna(raw_cost) else float(raw_cost or 0)
+                    saved_cost = unit_cost_from_price(entered_unit_cost, shares_value)
+                else:
+                    raw_cost = row.get("fund_total_cost")
+                    entered_total_cost = 0.0 if pd.isna(raw_cost) else float(raw_cost or 0)
+                    saved_cost = unit_cost_from_total(entered_total_cost, shares_value)
                 storage_rows.append({
                     "code": row.get("code"), "name": row.get("name"), "type": row.get("type"),
                     "shares": shares_value,
-                    "cost": unit_cost_from_total(total_cost_value, shares_value),
+                    "cost": saved_cost,
                 })
             save_positions(storage_rows, cash)
         except ValueError as e:

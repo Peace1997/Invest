@@ -28,6 +28,14 @@ def unit_cost_from_total(total_cost: float, shares: float) -> float:
     return total / quantity if quantity else 0.0
 
 
+def unit_cost_from_price(cost_price: float, shares: float) -> float:
+    """Validate and return a stock's directly entered per-share cost."""
+    cost, quantity = float(cost_price), float(shares)
+    if cost and quantity <= 0:
+        raise ValueError("填写成本价时，股数必须大于0")
+    return cost
+
+
 def search_instruments(con, query: str, limit: int = 10) -> list[dict]:
     """Find locally known stocks and ETFs by code or name."""
     text = str(query or "").strip()
