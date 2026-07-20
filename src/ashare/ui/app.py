@@ -41,7 +41,7 @@ from ashare.decision_signals import evaluate_due_signals
 from ashare.repositories import DecisionJournal, MarketWarehouse
 
 st.set_page_config(
-    page_title="Invest · 市场情报",
+    page_title="Trading",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -2027,7 +2027,7 @@ def _render_focus_stock(con):
 
 def page_sentiment():
     head = st.columns([0.52, 0.16, 0.16, 0.16], vertical_alignment="bottom")
-    head[0].title("市场情报工作台")
+    head[0].title("Trading")
     head[0].caption("A股行情、资金与资讯交叉验证")
     with head[1]:
         refresh_all = st.button(
