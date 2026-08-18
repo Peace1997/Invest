@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import unittest
+from datetime import date
 
+import duckdb
 import pandas as pd
 
-from ashare.signals.value_growth import rank_value_growth_candidates
+from ashare.signals.value_growth import rank_value_growth_candidates, screen_value_growth
 
 
 def _row(symbol: str, *, pe: float, pb: float, industry: str = "银行Ⅱ",
@@ -53,6 +55,56 @@ class ValueGrowthScreenTest(unittest.TestCase):
         self.assertEqual(result.iloc[0]["symbol"], "000001")
         self.assertEqual(result["is_tech"].sum(), 1)
         self.assertIn("000005", result["symbol"].tolist())
+
+    def test_screen_uses_only_announced_reports_and_includes_tech_boards(self):
+        con = duckdb.connect(":memory:")
+        con.execute("""
+            CREATE TABLE instruments (
+                symbol VARCHAR, name VARCHAR, type VARCHAR,
+                is_st BOOLEAN, delist_date DATE
+            );
+            CREATE TABLE valuation_daily_canon (
+                symbol VARCHAR, trade_date DATE, pe_ttm DOUBLE,
+                pb DOUBLE, total_mv DOUBLE
+            );
+            CREATE TABLE fundamentals_ts (
+                symbol VARCHAR, end_date DATE, ann_date DATE, roe DOUBLE,
+                gross_margin DOUBLE, debt_ratio DOUBLE, profit_yoy DOUBLE,
+                revenue_yoy DOUBLE
+            );
+            CREATE TABLE fundamentals (
+                symbol VARCHAR, report_date DATE, industry VARCHAR
+            );
+        """)
+        for symbol in ("688001", "300001"):
+            con.execute(
+                "INSERT INTO instruments VALUES (?, ?, 'stock', false, NULL)",
+                [symbol, symbol],
+            )
+            con.execute(
+                "INSERT INTO valuation_daily_canon VALUES (?, '2026-06-29', 20, 2, 100)",
+                [symbol],
+            )
+            con.execute(
+                "INSERT INTO fundamentals VALUES (?, '2026-06-30', '半导体')",
+                [symbol],
+            )
+            con.execute(
+                "INSERT INTO fundamentals_ts VALUES (?, '2025-12-31', '2026-03-30', 10, 30, 40, 12, 8)",
+                [symbol],
+            )
+        con.execute(
+            "INSERT INTO fundamentals_ts VALUES ('688001', '2026-06-30', '2026-07-31', 2, 20, 40, -5, -3)"
+        )
+        con.execute(
+            "INSERT INTO fundamentals VALUES ('688001', '2026-09-30', '银行Ⅱ')"
+        )
+
+        result = screen_value_growth(con, limit=5, as_of=date(2026, 6, 30))
+
+        self.assertEqual(set(result["symbol"]), {"688001", "300001"})
+        self.assertEqual(set(result["report_date"].dt.date), {date(2025, 12, 31)})
+        self.assertTrue(result["is_tech"].all())
 
 
 if __name__ == "__main__":

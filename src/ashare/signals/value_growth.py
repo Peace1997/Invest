@@ -1,7 +1,7 @@
 """Point-in-time value/growth screen shared by the morning and afternoon pushes."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 
@@ -98,6 +98,7 @@ def screen_value_growth(con, *, limit: int = 25, as_of: date | None = None) -> p
         latest_industry AS (
             SELECT symbol, arg_max(industry, report_date) AS industry
             FROM fundamentals
+            WHERE report_date <= ?
             GROUP BY symbol
         )
         SELECT i.symbol, i.name, x.industry,
@@ -110,11 +111,14 @@ def screen_value_growth(con, *, limit: int = 25, as_of: date | None = None) -> p
         JOIN latest_fundamental f ON f.symbol=i.symbol
         LEFT JOIN latest_industry x ON x.symbol=i.symbol
         WHERE i.type='stock'
-          AND (i.symbol LIKE '60%' OR i.symbol LIKE '00%')
+          AND (
+              i.symbol LIKE '60%' OR i.symbol LIKE '68%'
+              OR i.symbol LIKE '00%' OR i.symbol LIKE '30%'
+          )
           AND coalesce(i.is_st, false)=false
           AND (i.delist_date IS NULL OR i.delist_date > ?)
         """,
-        [as_of, as_of, as_of, as_of],
+        [as_of, as_of, as_of, as_of, as_of],
     ).df()
     return rank_value_growth_candidates(rows, limit=limit)
 
@@ -123,16 +127,25 @@ def attach_live_quotes(
     candidates: pd.DataFrame,
     *,
     source: TencentSource | None = None,
+    now: datetime | None = None,
+    max_age: timedelta = timedelta(minutes=5),
 ) -> pd.DataFrame:
-    """Attach exchange-timestamped quotes and drop missing/stale-day prices."""
+    """Attach quotes observed within the decision-time freshness window."""
     if candidates is None or candidates.empty:
         return pd.DataFrame()
     source = source or TencentSource()
     quotes = source.spot(candidates["symbol"].astype(str).tolist())
     if quotes is None or quotes.empty:
         return pd.DataFrame()
+    observed_at = pd.Timestamp(now or datetime.now())
     quotes = quotes.dropna(subset=["price", "quote_time"]).copy()
-    quotes = quotes[pd.to_datetime(quotes["quote_time"]).dt.date == date.today()]
+    quotes["quote_time"] = pd.to_datetime(quotes["quote_time"], errors="coerce")
+    age = observed_at - quotes["quote_time"]
+    quotes = quotes[
+        quotes["quote_time"].notna()
+        & (age >= pd.Timedelta(minutes=-1))
+        & (age <= pd.Timedelta(max_age))
+    ]
     quotes = quotes[pd.to_numeric(quotes["price"], errors="coerce") > 0]
     return candidates.merge(
         quotes[["symbol", "price", "prev_close", "pct_chg", "quote_time"]],
@@ -153,7 +166,7 @@ def candidate_reason(row) -> str:
 
 def push_body(candidates: pd.DataFrame, *, snapshot_label: str) -> str:
     lines = [
-        "低估值成长观察：利润正增长、营收增长≥5%、ROE≥5%为门槛，按 PE/PB 排序，科技约占四分之一。",
+        "低估值成长观察：利润正增长、营收增长≥5%、ROE≥5%为门槛，按 PE/PB 排序，Top 5 优先保留1只科技候选。",
         "价格只取交易所时间戳行情，不使用 AI 生成价格。\n",
     ]
     for row in candidates.itertuples():
