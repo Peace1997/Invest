@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 尾盘半小时短线 cron 入口: 工作日 14:30 跑(收盘前半小时), 推送当日尾盘强势候选。
-# 交易日门控在 cli endday 内查 calendar。免抢锁(只读)。短线投机线索, 非验证策略。
+# 低估值成长尾盘观察 cron 入口: 工作日 14:30 跑，以实时价复核早盘候选。
+# 交易日门控在 cli endday 内查 calendar。价格来自带交易所时间戳的实时行情。
 export PATH="/home/mpx/.local/bin:/usr/local/bin:/usr/bin:/bin"
 cd "$(dirname "$0")/.." || exit 1
 mkdir -p logs

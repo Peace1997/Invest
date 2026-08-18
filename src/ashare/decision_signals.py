@@ -13,8 +13,8 @@ _DEFAULT_HORIZONS = {
     "value": 60,
     "leader": 60,
     "reversal": 20,
-    "premarket": 1,
-    "endday": 1,
+    "premarket": 20,
+    "endday": 20,
     "pf": 20,
 }
 
@@ -125,7 +125,7 @@ def record_shortterm_signals(
         if not (code.isdigit() and len(code) == 6):
             continue
         factors = {
-            "性质": "短线投机线索",
+            "性质": "低估值成长观察",
             "reason": item.get("reason"),
             "watch": item.get("watch"),
             "stop": item.get("stop"),
@@ -138,7 +138,7 @@ def record_shortterm_signals(
             symbol=code,
             name=item.get("name") or code,
             asset_type="stock",
-            action="短线关注",
+            action="价值成长观察",
             score=None,
             horizon_days=horizon,
             factors=json.dumps(factors, ensure_ascii=False),

@@ -166,24 +166,22 @@ def cmd_alerts(cfg, con, src, args=None):
 
 
 def cmd_premarket(cfg, con, src, args=None):
-    """开盘竞价短线分析: 量价异动初筛 + DeepSeek 结合舆情点名 → Server酱推送. 9:25 用; --force 测试。
-    只读 DB(不抢看板锁)。⚠ 短线投机, 非验证策略。"""
+    """低估值成长早盘观察: 正增长门槛 + PE/PB 排序 + 科技优先，9:27 实时价推送。"""
     from .signals.premarket import run_premarket
     force = args is not None and getattr(args, "force", False)
     res = run_premarket(con, cfg, force=force)
-    print("开盘竞价短线:", res)
+    print("低估值成长早盘观察:", res)
     _record_decisions(
         lambda: decision_signals.record_shortterm_result(cfg, con, "premarket", res)
     )
 
 
 def cmd_endday(cfg, con, src, args=None):
-    """尾盘半小时短线: 尾盘强势量价初筛 + DeepSeek 结合舆情点名 → Server酱推送. 14:30 用; --force 测试。
-    只读 DB(不抢看板锁)。⚠ 短线投机, 非验证策略。"""
+    """低估值成长尾盘观察: 同一基本面规则，以 14:30 交易所时间戳行情复核价格。"""
     from .signals.endday import run_endday
     force = args is not None and getattr(args, "force", False)
     res = run_endday(con, cfg, force=force)
-    print("尾盘短线:", res)
+    print("低估值成长尾盘观察:", res)
     _record_decisions(
         lambda: decision_signals.record_shortterm_result(cfg, con, "endday", res)
     )
