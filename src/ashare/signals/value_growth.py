@@ -48,8 +48,8 @@ def rank_value_growth_candidates(
         & (out["total_mv"] >= 20)
         & (out["roe"] >= 5)
         & (out["debt_ratio"] < 85)
-        & (out["profit_yoy"] > 0)
-        & (out["revenue_yoy"] >= 5)
+        & out["profit_yoy"].between(0.01, 200)
+        & out["revenue_yoy"].between(5, 100)
         & (out["valuation_lag_days"] <= 30)
     ].copy()
     if out.empty:
@@ -166,7 +166,7 @@ def candidate_reason(row) -> str:
 
 def push_body(candidates: pd.DataFrame, *, snapshot_label: str) -> str:
     lines = [
-        "低估值成长观察：利润正增长、营收增长≥5%、ROE≥5%为门槛，按 PE/PB 排序，Top 5 优先保留1只科技候选。",
+        "低估值成长观察：利润增速0-200%、营收增速5-100%、ROE≥5%为门槛，按 PE/PB 排序，Top 5 优先保留1只科技候选。",
         "价格只取交易所时间戳行情，不使用 AI 生成价格。\n",
     ]
     for row in candidates.itertuples():

@@ -128,7 +128,7 @@ AkShare 财经快讯/新闻联播 → news_raw
 
 LLM 客户端在 `llm.py`，实际使用的是 OpenAI 兼容 Chat Completions 接口。`config.yaml` 决定 `base_url` 和模型；`.anthropic_key` 只是沿用的旧文件名。无密钥、无新闻、解析失败或调用失败时，舆情流程跳过，不生成伪结果。
 
-`premarket.py` 与 `endday.py` 共用 `value_growth.py`：最新已公告财务必须保持利润和营收正增长，再按低 PE/PB 排序；Top 5 优先为科技行业保留 1 个候选。最终候选才通过腾讯接口抓取 5 分钟内带交易所时间戳的实时价，然后由 Server 酱推送。LLM 不参与选股，也不生成价格。规则与回测见 [低估值成长观察规则](STRATEGY_VALUE_GROWTH.md)。
+`premarket.py` 与 `endday.py` 共用 `value_growth.py`：最新已公告财务须满足利润同比 0-200%、营收同比 5-100%，再按低 PE/PB 排序；Top 5 优先为科技行业保留 1 个候选。最终候选才通过腾讯接口抓取 5 分钟内带交易所时间戳的实时价，然后由 Server 酱推送。LLM 不参与选股，也不生成价格。规则与回测见 [低估值成长观察规则](STRATEGY_VALUE_GROWTH.md)。
 
 ### 3.5 决策留痕与 outcome
 

@@ -33,6 +33,8 @@ class ValueGrowthScreenTest(unittest.TestCase):
             _row("000002", pe=6, pb=0.6, revenue=-1),
             _row("000004", pe=7, pb=0.7, revenue=4.9),
             _row("000005", pe=8, pb=0.8, roe=4.9),
+            _row("000006", pe=5, pb=0.5, profit=200.1),
+            _row("000007", pe=5, pb=0.5, revenue=100.1),
             _row("000003", pe=10, pb=1.0),
         ])
 
