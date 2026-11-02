@@ -14,7 +14,9 @@ def open_db(path: str | Path, read_only: bool = False) -> duckdb.DuckDBPyConnect
 
 
 def init_schema(con: duckdb.DuckDBPyConnection) -> None:
-    con.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
+    # DuckDB leaves the script result open; the next statement on this connection
+    # then raises "unfinished result" unless the result is consumed.
+    con.execute(SCHEMA_PATH.read_text(encoding="utf-8")).fetchall()
 
 
 def upsert(
@@ -31,6 +33,11 @@ def upsert(
     """
     if df is None or df.empty:
         return 0
+    # fetchone() leaves the connection's result open; register() then fails on
+    # DuckDB 2.x. complete() finishes that result and is a no-op when idle.
+    complete = getattr(con, "complete", None)
+    if complete is not None:
+        complete()
     cols = list(df.columns)
     col_list = ", ".join(cols)
     key_list = ", ".join(keys)

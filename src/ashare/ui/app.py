@@ -1321,6 +1321,100 @@ def _render_sentiment_brief(sent: dict | None, market: dict | None):
     )
 
 
+def _fmt_cny(yuan: float | None) -> str:
+    if yuan is None or pd.isna(yuan):
+        return "—"
+    yi = float(yuan) / 1e8
+    if abs(yi) >= 10000:
+        return f"{yi / 10000:.2f} 万亿"
+    return f"{yi:.0f} 亿"
+
+
+def _render_hs300_fund_ratio(con):
+    """头部沪深300ETF期末净资产合计 / 沪深300流通市值."""
+    st.markdown("#### 头部沪深300基金占比")
+    err = None
+    try:
+        from ashare.ingest.hs300_fund_ratio import load_view, needs_refresh, refresh
+
+        if needs_refresh(con) and not st.session_state.get("hs300_ratio_tried"):
+            with st.spinner("拉取沪深300基金规模与流通市值…"):
+                err = refresh(con)
+            st.session_state["hs300_ratio_tried"] = True
+        view = load_view(con)
+    except Exception as e:  # noqa: BLE001 - 缺数据时留空态, 不打断市场概览
+        st.info(f"头部沪深300基金占比暂不可用：{e}")
+        return
+
+    series, funds = view.series, view.funds
+    if series is None or series.empty:
+        detail = f"（{err}）" if err else ""
+        st.info("暂无头部沪深300基金占比。基金规模或流通市值没有拉到，可点下面重试。" + detail)
+        if st.button("重新拉取占比", key="hs300_ratio_retry_empty"):
+            st.session_state.pop("hs300_ratio_tried", None)
+            st.rerun()
+        return
+
+    last = series.iloc[-1]
+    basis = str(last["basis"])
+    basis_txt = {"回推": "流通市值按点位回推", "实值": "流通市值实点", "截面": "规模与流通市值日期可能不同"}.get(basis, basis)
+    cols = st.columns(4)
+    cols[0].metric("占比", f"{float(last['ratio_pct']):.2f}%", basis_txt, delta_color="off")
+    cols[1].metric("头部规模合计", _fmt_cny(last["net_asset"]), f"前{len(funds)}只")
+    cols[2].metric("沪深300流通市值", _fmt_cny(last["float_mv"]), f"报告期 {last['report_date']}")
+    anchor = "—" if view.anchor_date is None else str(view.anchor_date)
+    cols[3].metric("流通市值实点", _fmt_cny(view.anchor_float_mv), f"行情 {anchor}")
+
+    plot = series.copy()
+    fig = go.Figure(go.Scatter(
+        x=plot["report_date"].astype(str),
+        y=pd.to_numeric(plot["ratio_pct"], errors="coerce"),
+        mode="lines+markers",
+        line=dict(color="#3973ac", width=2),
+        marker=dict(size=7, color="#3973ac"),
+        customdata=list(zip(
+            plot["net_asset"].map(lambda v: _fmt_cny(v)),
+            plot["float_mv"].map(lambda v: _fmt_cny(v)),
+            plot["basis"].astype(str),
+        )),
+        hovertemplate="%{x}<br>占比 %{y:.2f}%<br>头部规模 %{customdata[0]}<br>流通市值 %{customdata[1]}（%{customdata[2]}）<extra></extra>",
+        name="占比",
+    ))
+    fig.update_layout(
+        height=300,
+        margin=dict(t=28, b=10, l=10, r=10),
+        yaxis=dict(title=None, ticksuffix="%"),
+        xaxis=dict(title=None),
+        showlegend=False,
+        title=dict(text="头部沪深300ETF规模 ÷ 沪深300流通市值", font=dict(size=14), x=0),
+    )
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+
+    show = funds.copy()
+    show["净资产(亿)"] = (pd.to_numeric(show["net_asset"], errors="coerce") / 1e8).round(2)
+    show["报告期"] = show["report_date"].astype(str)
+    show = show.rename(columns={"symbol": "代码", "name": "名称"})[["代码", "名称", "净资产(亿)", "报告期"]]
+    st.dataframe(show, width="stretch", hide_index=True, height=min(390, 38 + 35 * len(show)))
+
+    names = "、".join(f"{r['名称']}({r['代码']})" for _, r in show.iterrows())
+    st.caption(
+        "口径：分子 = 上表基金最新一期「期末净资产」在各季度的合计（天天基金规模变动，元）。"
+        "入选规则：场内ETF简称含「沪深300」，剔除联接（避免与ETF重复计算）以及增强/指增/成长/价值/ESG/红利/现金流等变体，"
+        f"按最新净资产取前{len(funds)}，序列只保留这{len(funds)}只都有披露的季度。"
+        "分母 = 沪深300流通市值（东方财富行情，成分流通市值合计，元）。"
+        f"实点行情日 {anchor}"
+        + (f"、点位 {view.anchor_close:.2f}。" if view.anchor_close else "。")
+        + "历史季度没有逐日流通市值，按该季收盘点位相对实点等比回推（假设流通股本不变）；股本变化会使较早比例偏离。"
+        "比例单位为%。不是投资建议。"
+    )
+    st.caption("当前头部：" + names)
+    if err:
+        st.warning(f"部分数据源刷新失败，图上是已入库的部分：{err}")
+        if st.button("重新拉取占比", key="hs300_ratio_retry_partial"):
+            st.session_state.pop("hs300_ratio_tried", None)
+            st.rerun()
+
+
 def _render_market_overview(news: pd.DataFrame, sent: dict | None, market: dict | None):
     from ashare.ingest.fundflow import market_fund_flow_hist
 
@@ -1383,6 +1477,8 @@ def _render_market_overview(news: pd.DataFrame, sent: dict | None, market: dict 
     with right:
         _render_major_indices(con)
 
+    _render_hs300_fund_ratio(con)
+
     st.divider()
     left, right = st.columns([0.5, 0.5], gap="large")
     with left:
@@ -1424,6 +1520,8 @@ def _render_data_inventory(con):
         ("全球指数", "global_index_snapshot", "snap_time"),
         ("板块资金", "sector_fund_flow_snapshot", "snap_time"),
         ("个股异动", "stock_change_event", "event_time"),
+        ("沪深300基金规模", "hs300_fund_scale", "report_date"),
+        ("沪深300流通市值", "hs300_float_mv", "trade_date"),
     ]
     rows = []
     for label, table, time_col in specs:

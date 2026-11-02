@@ -571,3 +571,36 @@ CREATE TABLE IF NOT EXISTS market_fund_flow (
     s_net       DOUBLE,             -- 小单净流入, 元
     PRIMARY KEY (trade_date)
 );
+
+-- 头部沪深300ETF规模占比.
+-- 分子: 天天基金规模变动「期末净资产」(元), 季度.
+-- 分母实点: 东方财富沪深300行情流通市值(元). 指数收盘用于把实点回推到历史季度.
+CREATE TABLE IF NOT EXISTS hs300_fund_scale (
+    symbol      VARCHAR NOT NULL,   -- 6位基金代码
+    name        VARCHAR,
+    report_date DATE    NOT NULL,   -- 规模报告期(通常季末)
+    net_asset   DOUBLE,             -- 期末净资产, 元
+    shares      DOUBLE,             -- 期末总份额, 份
+    src         VARCHAR NOT NULL DEFAULT 'eastmoney_gmbd',
+    PRIMARY KEY (symbol, report_date)
+);
+CREATE INDEX IF NOT EXISTS idx_hs300_fund_scale_date ON hs300_fund_scale(report_date);
+
+CREATE TABLE IF NOT EXISTS hs300_index_close (
+    trade_date DATE PRIMARY KEY,
+    close      DOUBLE NOT NULL,     -- 沪深300收盘, 点
+    src        VARCHAR NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS hs300_float_mv (
+    trade_date DATE PRIMARY KEY,    -- 行情时间所在交易日
+    close      DOUBLE,              -- 快照时点位(最新价)
+    total_mv   DOUBLE,              -- 总市值, 元
+    float_mv   DOUBLE NOT NULL,     -- 流通市值, 元
+    src        VARCHAR NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS hs300_ratio_meta (
+    kind       VARCHAR PRIMARY KEY, -- 'fund_scale' | 'index_close' | 'float_mv'
+    fetched_at TIMESTAMP NOT NULL
+);
