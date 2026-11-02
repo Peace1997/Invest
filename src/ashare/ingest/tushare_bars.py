@@ -114,17 +114,35 @@ def ingest_etf_bars_ts(con, etfs, start: str, end: str) -> tuple[int, set[str]]:
 
 
 def ingest_index_bars_ts(con, indices, start: str, end: str) -> tuple[int, set[str]]:
-    """逐指数拉窗口, 落 index_bar。返回 (行数, 已覆盖的指数代码集)。"""
+    """逐指数拉窗口, 落 index_bar。返回 (行数, 已覆盖的指数代码集)。
+
+    2026-10-23 加一层兜底: 原端点对 index_daily **静默返回 0 行**（不报错），
+    所以"tushare 兜底"从未真正生效，指数全靠 akshare，而 akshare 在 16:00/20:15
+    这两个定时时点会被限流 → index 000300 失败 → market-refresh exit 2。
+    现在: 本端点 → VT 代理（t.xiaodefa.top/mcp，实测稳定且带 amount）→ 才轮到回退 akshare。
+    """
     pro = get_pro()
     total, covered = 0, set()
     for code in indices:
         code = str(code).zfill(6)
         ts = code + (".SZ" if code.startswith("39") else ".SH")
+        df = None
         try:
             df = _call(pro.index_daily, ts_code=ts, start_date=start, end_date=end)
         except Exception as e:  # noqa: BLE001
             log.warning("tushare index_daily %s 失败: %s", ts, e)
-            continue
+
+        if df is None or df.empty:
+            try:
+                from ..sources import vt_tushare_src  # noqa: PLC0415
+
+                df = vt_tushare_src.index_daily(ts, start, end)
+                if df is not None and not df.empty:
+                    log.info("VT 代理 index_daily %s 兜底成功: %d 行", ts, len(df))
+            except Exception as e:  # noqa: BLE001
+                log.warning("VT 代理 index_daily %s 失败: %s", ts, e)
+                df = None
+
         if df is None or df.empty:
             continue
         df = _map(df)

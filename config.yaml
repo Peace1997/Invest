@@ -43,7 +43,7 @@ sentiment:
 # 盘中预警 (交易时段每5分钟查持仓+大盘实时价, 触发阈值推送; 免 token)
 # Server酱密钥放 gitignored 的 .serverchan_key 或环境变量 SERVERCHAN_KEY
 alerts:
-  enabled: true
+  enabled: false
   channel: serverchan        # serverchan(微信)
   drop_pct: 5.0              # 单只当日跌幅触发(%)
   surge_pct: 7.0            # 单只当日涨幅触发(%)
@@ -53,12 +53,12 @@ alerts:
 # 低估值成长早盘观察 (9:27 跑, 9:30 前推送; 覆盖60/68/00/30; alerts 通道)
 # 利润增速0-200%、营收增速5-100%、ROE≥5%为门槛，按 PE/PB 排序；Top 5 优先保留1只科技候选。
 premarket:
-  enabled: true
+  enabled: false
   picks: 5      # 推送候选数
 
 # 低估值成长尾盘观察 (14:30 跑; 与早盘同一基本面规则，以实时价复核)
 endday:
-  enabled: true
+  enabled: false
   picks: 5      # 推送候选数
 
 # 决策信号留痕 + outcome 回溯。缺省也能跑；这里显式列出便于调整。
