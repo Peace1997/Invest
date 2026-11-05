@@ -11,19 +11,19 @@
     uv run python -m ashare.cli pf                          # 我的持仓日评 (auto-priced)
     uv run python -m ashare.cli ui                          # 启动网页看板 (Streamlit)
     uv run python -m ashare.cli query                      # peek at warehouse
+    uv run python -m ashare.cli tushare-sample             # Tushare HTTP sample ingest
+    uv run python -m ashare.cli daily-picks --screen f.json
 """
 from __future__ import annotations
 import argparse
 import logging
+import sys
 
 from .config import load, resolve_path
-from .sources import AkSource
 from .storage import open_db, init_schema
-from .jobs.backfill import backfill_meta, backfill_bars, backfill_northbound
-from .jobs.daily_update import daily_update
-from .notify.report import render_daily_report
-from .notify.live import render_live_report
-from .notify.portfolio_report import render_portfolio_report
+
+# AkShare and the jobs that import it stay out of this module's import.
+# `tushare-sample` and `daily-picks` run without them.
 
 
 def _setup_logging():
@@ -40,6 +40,7 @@ def cmd_init(cfg, con, src):
 
 
 def cmd_sample(cfg, con, src):
+    from .jobs.backfill import backfill_meta, backfill_bars, backfill_northbound
     init_schema(con)
     backfill_meta(con, src)
     t = cfg["sample_targets"]
@@ -59,6 +60,7 @@ def cmd_sample(cfg, con, src):
 
 
 def cmd_backfill_meta(cfg, con, src):
+    from .jobs.backfill import backfill_meta
     init_schema(con)
     backfill_meta(con, src)
     print(con.execute(
@@ -67,6 +69,7 @@ def cmd_backfill_meta(cfg, con, src):
 
 
 def cmd_backfill_all(cfg, con, src):
+    from .jobs.backfill import backfill_meta, backfill_bars, backfill_northbound
     init_schema(con)
     backfill_meta(con, src)
     stocks = con.execute("SELECT symbol FROM instruments WHERE type='stock'").df()["symbol"].tolist()
@@ -84,6 +87,7 @@ def cmd_backfill_all(cfg, con, src):
 
 
 def cmd_daily(cfg, con, src, args=None):
+    from .jobs.daily_update import daily_update
     init_schema(con)
     universe = getattr(args, "universe", None) or "db"
     result = daily_update(con, src, indices=cfg["sample_targets"]["indices"],
@@ -220,6 +224,7 @@ def cmd_pf(cfg, con, src, args=None):
     """我的持仓日评: 自动估值 → 操作建议 → 写回 positions.yaml 注释 → 存历史快照。"""
     from datetime import date
     from pathlib import Path
+    from .notify.portfolio_report import render_portfolio_report
     from .portfolio import load_positions, value_portfolio, annotate_positions_file
     from .decision import generate_advice
     from .signals import score_portfolio, index_timing
@@ -509,6 +514,7 @@ def cmd_ui(cfg, con, src):
 
 
 def cmd_live(cfg, con, src):
+    from .notify.live import render_live_report
     t = cfg.get("sample_targets", {})
     indices = t.get("indices") or ["000300"]
     watchlist = (t.get("stocks") or []) + (t.get("etfs") or [])
@@ -518,6 +524,7 @@ def cmd_live(cfg, con, src):
 def cmd_today(cfg, con, src, args=None):
     from datetime import date
     from pathlib import Path
+    from .notify.report import render_daily_report
     idx = (cfg.get("sample_targets", {}).get("indices") or ["000300"])[0]
     watchlist = (cfg.get("sample_targets", {}).get("stocks") or []) + \
                 (cfg.get("sample_targets", {}).get("etfs") or [])
@@ -580,6 +587,50 @@ def cmd_fundflow(cfg, con, src, args=None):
     print(render_stock_flow_table(con, syms))
 
 
+def cmd_tushare_sample(cfg, con, src, args=None):
+    """Calendar, metadata, and bars for sample_targets via TUSHARE_TOKEN / TUSHARE_HTTP_URL."""
+    from datetime import date
+    from .ingest.tushare_sample import ingest_sample, sample_universe
+    from .sources.tushare_http import query
+    init_schema(con)
+    start = (getattr(args, "start", None) or cfg.get("backfill_start") or "20150101")
+    end = getattr(args, "end", None) or date.today().strftime("%Y%m%d")
+    res = ingest_sample(con, query, sample_universe(cfg), start, end)
+    shown = {k: v for k, v in res.items() if k != "failed"}
+    print(f"tushare-sample {start}→{end}: {shown}")
+    if res["failed"]:
+        print("failures:")
+        for item in res["failed"]:
+            print(" -", item)
+        sys.exit(2)
+
+
+def cmd_daily_picks(cfg, con, src, args=None):
+    """1–3 dual_low candidates from an AlphaSift JSON file or the local warehouse."""
+    import json
+    from datetime import datetime
+    from .daily_picks import from_alphasift, load_screen, render, screen_warehouse
+    screen = getattr(args, "screen", None) if args is not None else None
+    warehouse = bool(getattr(args, "warehouse", False)) if args is not None else False
+    if bool(screen) == warehouse:
+        print("usage: daily-picks --screen FILE [--live] [--json] | "
+              "daily-picks --warehouse [--as-of YYYYMMDD] [--json]")
+        sys.exit(2)
+    limit = getattr(args, "limit", 3) if args is not None else 3
+    if screen:
+        payload = load_screen(screen)
+        requested = "live" if getattr(args, "live", False) else "replay"
+        result = from_alphasift(payload, requested_mode=requested, limit=limit)
+    else:
+        raw = getattr(args, "as_of", None)
+        day = datetime.strptime(raw, "%Y%m%d").date() if raw else None
+        result = screen_warehouse(con, as_of=day, mode="live", limit=limit)
+    if args is not None and getattr(args, "json", False):
+        print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+    else:
+        print(render(result))
+
+
 CMDS = {
     "init": cmd_init,
     "sample": cmd_sample,
@@ -608,6 +659,8 @@ CMDS = {
     "endday": cmd_endday,
     "stock": cmd_stock,
     "query": cmd_query,
+    "tushare-sample": cmd_tushare_sample,
+    "daily-picks": cmd_daily_picks,
 }
 
 
@@ -642,9 +695,26 @@ def main():
                    default=None, help="for `backfill-min`/`min-update`: 分钟频率 (默认读 config minute.freq)")
     p.add_argument("--symbols", default=None,
                    help="for `backfill-min`: 逗号分隔的6位个股代码; 不传则用持仓+config watchlist")
-    p.add_argument("--start", default=None, help="for `backfill-min`: 起始日 YYYYMMDD")
-    p.add_argument("--end", default=None, help="for `backfill-min`: 结束日 YYYYMMDD (默认今天)")
+    p.add_argument("--start", default=None,
+                   help="YYYYMMDD start (`backfill-min`, `tushare-sample`)")
+    p.add_argument("--end", default=None,
+                   help="YYYYMMDD end (`backfill-min`, `tushare-sample`; default today)")
+    p.add_argument("--screen", default=None,
+                   help="for `daily-picks`: AlphaSift dual_low JSON file")
+    p.add_argument("--warehouse", action="store_true",
+                   help="for `daily-picks`: rank stocks already stored in the warehouse")
+    p.add_argument("--live", action="store_true",
+                   help="for `daily-picks --screen`: label the file as a live screen")
+    p.add_argument("--as-of", default=None,
+                   help="for `daily-picks --warehouse`: data date YYYYMMDD")
+    p.add_argument("--limit", type=int, default=3,
+                   help="for `daily-picks`: at most this many candidates, capped at 3")
+    p.add_argument("--json", action="store_true",
+                   help="for `daily-picks`: print the result as JSON")
     args = p.parse_args()
+    if args.cmd in {"tushare-sample", "daily-picks"}:
+        _run_light(args)
+        return
 
     cfg = load(args.config)
     db_path = resolve_path(cfg, "warehouse")
@@ -661,6 +731,7 @@ def main():
                   "   只读看数据可用: query / today / live / recommend。")
             import sys; sys.exit(3)
         raise
+    from .sources import AkSource
     src = AkSource(
         per_call_sleep=cfg["rate_limit"]["per_call_sleep"],
         max_retries=cfg["rate_limit"]["max_retries"],
@@ -673,6 +744,44 @@ def main():
             fn(cfg, con, src, args)
         else:
             fn(cfg, con, src)
+    finally:
+        con.close()
+
+
+def _run_light(args):
+    """Tushare sample ingest and daily picks. Does not import AkShare."""
+    cfg = load(args.config)
+    if args.cmd == "daily-picks" and args.screen and not args.warehouse:
+        cmd_daily_picks(cfg, None, None, args)
+        return
+    if args.cmd == "daily-picks":
+        db_path = resolve_path(cfg, "warehouse")
+        if not db_path.exists():
+            print(f"warehouse not found: {db_path}")
+            sys.exit(2)
+        con = open_db(db_path, read_only=True)
+        try:
+            cmd_daily_picks(cfg, con, None, args)
+        finally:
+            con.close()
+        return
+
+    from .sources.tushare_http import TushareConfigError, require_settings
+    try:
+        require_settings()
+    except TushareConfigError as e:
+        print(f"❌ {e}")
+        sys.exit(2)
+    db_path = resolve_path(cfg, "warehouse")
+    try:
+        con = open_db(db_path, read_only=False)
+    except Exception as e:
+        if "lock" in str(e).lower():
+            print("❌ 数据库被占用（多半是看板 `ui` 还开着）。请先关掉看板再跑 tushare-sample。")
+            sys.exit(3)
+        raise
+    try:
+        cmd_tushare_sample(cfg, con, None, args)
     finally:
         con.close()
 
